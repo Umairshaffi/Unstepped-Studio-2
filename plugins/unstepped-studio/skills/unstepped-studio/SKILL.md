@@ -29,8 +29,10 @@ bash "${CLAUDE_PLUGIN_ROOT}/skills/unstepped-studio/scripts/setup.sh"
 
 On a new Mac it opens a sign-in page in the browser: the person signs in there with their work email and the one-time
 code their admin gave them (never ask for the code in chat, never guess one). Then the app installs, Home is set to start
-at login, and it opens. On a Mac that's already signed in, setup just repairs and starts Home. Updates install by
-themselves (always on).
+at login, and it opens straight onto Home > Setup: Apple's developer tools, Homebrew (it asks for the Mac's password once,
+in a Terminal window), FFmpeg, Node, yt-dlp, uv, the HyperFrames engine, the editing Python and models, and the
+company's video skills (installed into ~/.claude/skills). The person adds their API keys last. On a Mac that's already
+signed in, setup just repairs and starts Home. Updates and the team's skills stay in step by themselves.
 
 ## Accounts and the lock
 
