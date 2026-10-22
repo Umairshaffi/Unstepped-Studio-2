@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Unstepped Cloud on this Mac: sign-in, check-ins, the trial, the lock, and app updates. Stdlib only.
+"""Unstepped Cloud on this Mac: sign-in, check-ins, the lock, and app updates. Stdlib only.
 
 Each Mac signs in with an email and a one-time code from its company's admin (Home > Settings > Account). The server
 gives it a token tied to this Mac's hardware (a copied token is refused on any other Mac and flagged to the admin).
 Home checks in every few minutes; Claude sessions check in when they start (the plugin's hook).
 
-States: signed-in | trial (7 days from this Mac's first run, no shared styles) | locked (trial over, signed out,
-logged out by the admin, offline too long, or an app update is required) | off (no server configured: a working copy
-that never locks, like the maintainer's own before the service is set up).
+States: signed-in | locked (not signed in yet, signed out, logged out by the admin, offline too long, or an app update
+is required) | off (no server configured: a working copy that never locks, like the service owner's own). There is no
+trial: a new Mac sees only the sign-in screen, and the app is downloaded only after signing in (the installer's gate).
+A sign-in lasts until someone signs out: restarts and shutdowns keep it. Offline too long only pauses Home until the Mac
+reaches the server again; it never removes anything.
 
 Signing out, or being logged out, removes the shared styles this Mac downloaded (they live in
 ~/Library/Application Support/Unstepped/shared/). The person's own styles and their video projects stay.
@@ -19,6 +21,7 @@ Signing out, or being logged out, removes the shared styles this Mac downloaded 
     python3 ~/unstepped-review/cloud.py signout
     python3 ~/unstepped-review/cloud.py update                    install the newest app version from the server
     python3 ~/unstepped-review/cloud.py server <url>              set the server (the installer does this)
+    python3 ~/unstepped-review/cloud.py gate [--no-open]          the sign-in page a new Mac sees first (the installer opens it)
     python3 ~/unstepped-review/cloud.py publish <version> ["notes"]   (the service's owner) zip this app and publish it
 """
 import datetime
@@ -44,7 +47,6 @@ STATE = ROOT / "home"
 FILE = STATE / "cloud.json"
 MANAGED = Path.home() / "Library" / "Application Support" / "Unstepped" / "shared"
 CHECK_EVERY = 180          # seconds between check-ins (Home's background thread, Claude's start-up hook)
-LOCAL_TRIAL_DAYS = 7       # when the server can't be reached on a first run
 KEEP = ("home", "backups", "test", "venv", "models", "state", "__pycache__")   # never replaced by an app update
 
 
@@ -218,14 +220,7 @@ def state():
         if _now() - last > grace:
             return {**out, "state": "locked", "reason": "offline"}
         return {**out, "state": "signed-in", "offline_since": st.get("offline_since")}
-    start = _ts((st.get("trial") or {}).get("started")) or st.get("first_run") or _now()
-    days = (st.get("trial") or {}).get("days", LOCAL_TRIAL_DAYS)
-    left = days - (_now() - start) / 86400
-    if st.get("ended"):   # signed out or logged out: no new trial on this Mac
-        return {**out, "state": "locked", "reason": st["ended"]}
-    if left <= 0:
-        return {**out, "state": "locked", "reason": "trial-over", "days_left": 0}
-    return {**out, "state": "trial", "days_left": round(left, 1)}
+    return {**out, "state": "locked", "reason": st.get("ended") or "not-signed-in"}
 
 
 def _older(a, b):
@@ -238,7 +233,7 @@ def locked():
     return s if s["state"] == "locked" else None
 
 
-LOCK_TEXT = {"trial-over": "The 7-day trial is over. Sign in to keep using Unstepped Studio.",
+LOCK_TEXT = {"not-signed-in": "Sign in with your work email and the code from your admin.",
              "signed-out": "This Mac is signed out of Unstepped.", "logged-out": "An admin logged this Mac out of Unstepped.",
              "removed": "This account was removed from the team.", "wrong-mac": "This sign-in belongs to another Mac.",
              "offline": "This Mac hasn't reached Unstepped Cloud for too long. Connect to the internet and check again.",
@@ -269,7 +264,7 @@ def guard(tool="this tool"):
 # ---------------------------------------------------------------- checking in
 def check(force=False):
     """Check in with the server (at most every few minutes unless force). Applies a logout (wipes the shared styles)
-    and records the trial. Never raises for a network problem: an offline Mac keeps working until its grace runs out."""
+    and installs new versions. Never raises for a network problem: an offline Mac keeps working until its grace runs out."""
     st = load()
     if not server():
         return state()
@@ -287,7 +282,7 @@ def check(force=False):
         elif not st.get("token"):
             r = call("POST", "/v1/hello", {"hw": hw(), "name": mac_name(), "version": version()}, auth=False)
             st = load()
-            st.update(trial=r["trial"], latest=r.get("latest"), last_ok=_now())
+            st.update(latest=r.get("latest"), last_ok=_now())
             save(st)
     except CloudError as e:
         st = load()
@@ -299,9 +294,7 @@ def check(force=False):
         elif e.error in ("wrong-mac", "suspended"):
             end(e.error)
     s = state()
-    if s["state"] == "locked" and s.get("reason") in ("offline", "trial-over"):
-        wipe()
-    if s["state"] in ("signed-in", "trial") and s.get("latest") and _older(version(), s["latest"]) and not os.environ.get("UNSTEPPED_NO_AUTOUPDATE"):
+    if s["state"] == "signed-in" and s.get("latest") and _older(version(), s["latest"]) and not os.environ.get("UNSTEPPED_NO_AUTOUPDATE"):
         try:   # automatic updates: always on (the company decides the version, not the Mac)
             r = update()
             if r.get("updated"):
@@ -445,12 +438,152 @@ def install_zip(data, dest):
             os.replace(str(out) + ".new", out)
 
 
+# ---------------------------------------------------------------- the installer's sign-in page (no app before sign-in)
+GATE_PORT = 47899
+AGENT = "com.unstepped.home"
+GATE_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in to Unstepped</title><style>
+:root{--page:#12161d;--panel:#1a2029;--line:#2a323e;--ink:#f1f4f8;--body:#c9d1dc;--muted:#97a3b3;--brand:#2eb98c;--bad:#f87171}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){--page:#f5f7fa;--panel:#fff;--line:#e3e8ef;--ink:#121821;--body:#2b3542;--muted:#5d6a7b}}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--page);color:var(--body);font:15px/1.5 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;padding:16px}
+.box{width:min(420px,100%);background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:28px;display:flex;flex-direction:column;gap:12px}
+.logo{font-weight:800;font-size:22px;color:var(--ink);letter-spacing:-.02em}.logo i{color:var(--brand);font-style:normal}h1{margin:0;font-size:20px;color:var(--ink)}p{margin:0;color:var(--muted);font-size:13.5px}
+input{font:inherit;height:42px;padding:0 12px;border-radius:10px;border:1px solid var(--line);background:var(--page);color:var(--ink)}input.code{font-family:ui-monospace,Menlo,monospace;letter-spacing:.06em}
+button{font:inherit;font-weight:700;height:42px;border:0;border-radius:10px;background:var(--brand);color:#06130e;cursor:pointer}button:disabled{opacity:.6;cursor:wait}
+#msg{min-height:20px;font-size:13px}#msg.bad{color:var(--bad)}</style></head><body>
+<form class="box" id="f"><div class="logo"><i>/</i> unstepped</div><h1>Sign in to Unstepped Studio</h1>
+<p>Use your work email and the one-time code your admin sent you. Unstepped Studio installs on this Mac once you're signed in.</p>
+<input id="email" type="email" placeholder="Work email" autocomplete="email" required><input id="code" class="code" placeholder="Code: K7QF-2MXP-9R4T" autocomplete="one-time-code" required>
+<button id="go">Sign in</button><div id="msg"></div></form>
+<script>
+const $=id=>document.getElementById(id),T=new URLSearchParams(location.search).get('t')||'';
+const msg=(t,bad)=>{$('msg').textContent=t;$('msg').className=bad?'bad':''};
+async function poll(){const r=await (await fetch('/status?t='+T)).json();msg(r.message,r.phase==='failed');
+  if(r.phase==='done'&&r.url){location.href=r.url;return}if(r.phase==='failed'){$('go').disabled=false;return}setTimeout(poll,800)}
+$('f').onsubmit=async e=>{e.preventDefault();$('go').disabled=true;msg('Signing in…');
+  const r=await fetch('/signin?t='+T,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email:$('email').value,code:$('code').value})});
+  const j=await r.json();if(!r.ok){msg(j.error||'Not signed in',true);$('go').disabled=false;return}poll()};
+fetch('/status?t='+T).then(r=>r.json()).then(r=>{if(r.phase!=='idle')poll()});
+</script></body></html>"""
+
+
+def install_agent():
+    """Home starts by itself whenever this person logs in (a LaunchAgent); a crash restarts it."""
+    if os.environ.get("UNSTEPPED_NO_AGENT"):
+        return False
+    plist = Path.home() / "Library" / "LaunchAgents" / f"{AGENT}.plist"
+    plist.parent.mkdir(parents=True, exist_ok=True)
+    plist.write_text(f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>{AGENT}</string>
+  <key>ProgramArguments</key><array><string>/usr/bin/python3</string><string>{ROOT / "home.py"}</string><string>serve</string><string>--no-open</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>StandardOutPath</key><string>{STATE / "home.log"}</string><key>StandardErrorPath</key><string>{STATE / "home.log"}</string>
+</dict></plist>
+""")
+    dom = f"gui/{os.getuid()}"
+    subprocess.run(["launchctl", "bootout", f"{dom}/{AGENT}"], capture_output=True)
+    return subprocess.run(["launchctl", "bootstrap", dom, str(plist)], capture_output=True).returncode == 0
+
+
+def start_home():
+    """Home on this Mac (through its LaunchAgent when there is one); returns its URL once it answers."""
+    if not install_agent():
+        subprocess.Popen(["/usr/bin/python3", str(ROOT / "home.py"), "serve", "--no-open"], stdin=subprocess.DEVNULL,
+                         stdout=open(STATE / "home.log", "ab"), stderr=subprocess.STDOUT, start_new_session=True, cwd=str(ROOT))
+    for _ in range(80):
+        time.sleep(0.25)
+        try:
+            url = (STATE / ".server").read_text().strip()
+            urllib.request.urlopen(url.split("?")[0] + "api/state?" + url.split("?", 1)[1], timeout=2).read()
+            return url
+        except (OSError, IndexError):
+            continue
+    return None
+
+
+def gate(open_browser=True, port=GATE_PORT):
+    """The sign-in page a new Mac sees first. Nothing of the app is on the Mac until this succeeds: then it downloads
+    the app, sets Home to start at login, starts it and hands over (the page goes to Home)."""
+    import secrets as _s
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from urllib.parse import parse_qs, urlsplit
+    tok = _s.token_urlsafe(24)
+    job = {"phase": "idle", "message": ""}
+
+    def work(email, code):
+        try:
+            job.update(phase="running", message="Signing in…")
+            if state()["state"] != "signed-in":
+                signin(email, code)
+            job.update(message="Installing Unstepped Studio…")
+            if not (ROOT / "home.py").exists() or _older(version(), load().get("latest") or "0.0.0"):
+                update(force=True)
+            job.update(message="Starting Home…")
+            url = start_home()
+            if not url:
+                raise CloudError(0, "home", "Home didn't start: see ~/unstepped-review/home/home.log")
+            job.update(phase="done", message="You're in.", url=url)
+            threading.Timer(15, srv.shutdown).start()
+        except CloudError as e:
+            job.update(phase="failed", message=e.message)
+        except Exception as e:   # never leave the page waiting
+            job.update(phase="failed", message=f"{type(e).__name__}: {e}")
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def send(self, code, body, ctype="application/json"):
+            b = body if isinstance(body, bytes) else json.dumps(body).encode()
+            self.send_response(code)
+            self.send_header("content-type", ctype)
+            self.send_header("cache-control", "no-store")
+            self.send_header("content-length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+
+        def ok(self):
+            return parse_qs(urlsplit(self.path).query).get("t", [""])[0] == tok
+
+        def do_GET(self):
+            if not self.ok():
+                return self.send(403, {"error": "open the address the installer printed"})
+            p = urlsplit(self.path).path
+            if p == "/":
+                return self.send(200, GATE_HTML.encode(), "text/html; charset=utf-8")
+            if p == "/status":
+                return self.send(200, job)
+            return self.send(404, {})
+
+        def do_POST(self):
+            if not self.ok() or urlsplit(self.path).path != "/signin":
+                return self.send(403, {"error": "not allowed"})
+            if job["phase"] == "running":
+                return self.send(409, {"error": "Already signing in."})
+            b = json.loads(self.rfile.read(int(self.headers.get("content-length") or 0)) or b"{}")
+            if not re.match(r"^[^\s@]+@[^\s@]+\.[a-z]{2,}$", b.get("email") or "", re.I) or len(re.sub(r"[^A-Za-z0-9]", "", b.get("code") or "")) < 8:
+                return self.send(400, {"error": "Enter your work email and the code from your admin."})
+            threading.Thread(target=work, args=(b["email"], b["code"]), daemon=True).start()
+            return self.send(200, {"ok": True})
+
+    srv = ThreadingHTTPServer(("127.0.0.1", port), H)
+    url = f"http://127.0.0.1:{port}/?t={tok}"
+    print(url, flush=True)
+    if open_browser:
+        subprocess.run(["open", url])
+    srv.serve_forever()
+
+
 APP_FILES = ("home.py", "review.py", "style.py", "shared.py", "cloud.py", "deploy.py", "lib", "LICENSE-cooked", "NOTICE-cooked")
 
 
 def publish(ver, notes=""):
     """Zip this app (the files every Mac runs, never home/ or anything personal) as version ver and publish it.
-    Every signed-in Mac installs it on its next check-in; trial Macs get it when they set up."""
+    Every signed-in Mac installs it on its next check-in; a new Mac gets it when it signs in."""
     if not re.fullmatch(r"\d+\.\d+\.\d+", ver):
         raise CloudError(0, "bad-version", "The version looks like 2.1.0")
     me = os.environ.get("USER") or ""
@@ -482,8 +615,6 @@ def main():
             quiet = "--quiet" in a
             if s["state"] == "locked":
                 print(f"Unstepped is locked: {lock_message(s)}")
-            elif s["state"] == "trial" and (not quiet or s.get("days_left", 7) <= 3):
-                print(f"Unstepped Studio: trial, {s['days_left']:g} days left. Sign in on Home > Settings > Account.")
             elif s.get("just_updated"):
                 print(f"Unstepped Studio updated to {s['just_updated']}. Home restarts on it by itself.")
             elif not quiet:
@@ -498,6 +629,10 @@ def main():
             print(json.dumps(update("--force" in a)))
         elif cmd == "publish" and len(a) >= 2:
             print(json.dumps(publish(a[1], a[2] if len(a) > 2 else "")))
+        elif cmd == "gate":
+            gate(open_browser="--no-open" not in a)
+        elif cmd == "start":
+            print(start_home() or "Home didn't start")
         elif cmd == "server" and len(a) == 2:
             st = load()
             st["server"] = a[1].rstrip("/")

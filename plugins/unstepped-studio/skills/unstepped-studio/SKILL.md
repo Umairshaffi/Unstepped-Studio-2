@@ -20,22 +20,22 @@ It's a fork of the review page in the cooked. / ai-editor plugin by NextWork (MI
 
 ## Install (first time, or to repair)
 
-The plugin is only the installer: the app comes from the company's Unstepped Cloud. When the user asks to set up
-Unstepped Studio, run
+The plugin is only the installer: the app comes from the company's Unstepped Cloud, and only after signing in. When the
+user asks to set up Unstepped Studio, run
 
 ```bash
 bash "${CLAUDE_PLUGIN_ROOT}/skills/unstepped-studio/scripts/setup.sh"
 ```
 
-A new Mac gets a 7-day trial (everything but shared styles); after that it must be signed in. If setup says to sign in
-first, ask the user for their work email and the one-time code their admin gave them (never guess or reuse one), run
-`/usr/bin/python3 ~/unstepped-review/cloud.py signin <email> <code>`, then setup again. Updates install by themselves
-when a Claude session starts (the plugin's hook) or from Home > Settings > Account > Check for updates.
+On a new Mac it opens a sign-in page in the browser: the person signs in there with their work email and the one-time
+code their admin gave them (never ask for the code in chat, never guess one). Then the app installs, Home is set to start
+at login, and it opens. On a Mac that's already signed in, setup just repairs and starts Home. Updates install by
+themselves (always on).
 
 ## Accounts and the lock
 
-`python3 ~/unstepped-review/cloud.py status` says where this Mac stands: signed-in, trial (days left), or locked (trial
-over, signed out, logged out by the admin, offline too long, or an update needed). When it's locked, Home shows a
+`python3 ~/unstepped-review/cloud.py status` says where this Mac stands: signed-in, or locked (not signed in yet, signed
+out, logged out by the admin, offline too long, or an update needed). Restarts never sign anyone out. When it's locked, Home shows a
 sign-in screen and `review.py`, `style.py` and `shared.py` refuse to run: tell the user to sign in on Home >
 Settings > Account; don't try to get around it. Signing out, or an admin's logout, removes the shared styles this Mac
 downloaded; the person's own styles and video projects stay. Admins open the team dashboard from Home > Settings >
