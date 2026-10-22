@@ -160,7 +160,7 @@ class CloudError(RuntimeError):
         self.status, self.error, self.message, self.extra = status, error, message or error, extra or {}
 
 
-def call(method, path, body=None, auth=True, data=None, stream_to=None, ctype=None, timeout=30):
+def call(method, path, body=None, auth=True, data=None, stream_to=None, ctype=None, timeout=30, headers=None, with_headers=False):
     """A request to the server. JSON in and out unless data= (raw upload) or stream_to= (a download to a file)."""
     srv = server()
     if not srv:
@@ -169,6 +169,7 @@ def call(method, path, body=None, auth=True, data=None, stream_to=None, ctype=No
     h = {"x-unstepped-hw": hw(), "x-unstepped-version": version(), "x-unstepped-mac": _plain(mac_name())[:80], "user-agent": f"unstepped/{version()}"}
     if auth and st.get("token"):
         h["authorization"] = f"Bearer {st['token']}"
+    h.update(headers or {})
     payload = None
     if body is not None:
         payload, h["content-type"] = json.dumps(body).encode(), "application/json"
@@ -196,9 +197,8 @@ def call(method, path, body=None, auth=True, data=None, stream_to=None, ctype=No
             tmp.replace(stream_to)
             return dict(r.headers)
         raw = r.read()
-        if (r.headers.get("content-type") or "").startswith("application/json"):
-            return json.loads(raw or b"{}")
-        return raw
+        out = json.loads(raw or b"{}") if (r.headers.get("content-type") or "").startswith("application/json") else raw
+        return (out, dict(r.headers)) if with_headers else out
 
 
 # ---------------------------------------------------------------- where this Mac stands
@@ -407,6 +407,12 @@ def wipe():
             gone.append(f"skill {name}")
     if rec.get("installed"):
         (STATE / "skills.json").unlink(missing_ok=True)
+    md = Path.home() / ".claude" / "CLAUDE.md"   # and the standing instruction that pointed Claude at them
+    if md.is_file():
+        t = md.read_text(encoding="utf-8")
+        t2 = re.sub(r"\n*<!-- unstepped-studio:start.*?<!-- unstepped-studio:end -->\n?", "\n", t, flags=re.S).strip()
+        if t2 != t.strip():
+            md.write_text(t2 + "\n" if t2 else "", encoding="utf-8")
     if MANAGED.is_dir():   # anything left over from an older install
         for d in MANAGED.iterdir():
             if d.name not in reg.get("styles", {}):
@@ -590,7 +596,7 @@ def gate(open_browser=True, port=GATE_PORT):
     srv.serve_forever()
 
 
-APP_FILES = ("home.py", "review.py", "style.py", "shared.py", "cloud.py", "deploy.py", "macsetup.py", "lib", "LICENSE-cooked", "NOTICE-cooked")
+APP_FILES = ("home.py", "review.py", "style.py", "shared.py", "cloud.py", "deploy.py", "macsetup.py", "studio.py", "lib", "LICENSE-cooked", "NOTICE-cooked")
 
 
 def publish(ver, notes=""):
