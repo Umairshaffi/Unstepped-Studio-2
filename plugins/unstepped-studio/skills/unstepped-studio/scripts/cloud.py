@@ -400,6 +400,13 @@ def wipe():
             tmp = f.with_suffix(".tmp")
             tmp.write_text(json.dumps(d, indent=1), encoding="utf-8")
             tmp.replace(f)
+    rec = rj(STATE / "skills.json") if (STATE / "skills.json").is_file() else {}
+    for name, e in (rec.get("installed") or {}).items():   # the company's video skills and creator profile go too
+        if e.get("path"):
+            shutil.rmtree(e["path"], ignore_errors=True)
+            gone.append(f"skill {name}")
+    if rec.get("installed"):
+        (STATE / "skills.json").unlink(missing_ok=True)
     if MANAGED.is_dir():   # anything left over from an older install
         for d in MANAGED.iterdir():
             if d.name not in reg.get("styles", {}):
@@ -482,6 +489,7 @@ def install_agent():
 <plist version="1.0"><dict>
   <key>Label</key><string>{AGENT}</string>
   <key>ProgramArguments</key><array><string>/usr/bin/python3</string><string>{ROOT / "home.py"}</string><string>serve</string><string>--no-open</string></array>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
   <key>StandardOutPath</key><string>{STATE / "home.log"}</string><key>StandardErrorPath</key><string>{STATE / "home.log"}</string>
@@ -582,7 +590,7 @@ def gate(open_browser=True, port=GATE_PORT):
     srv.serve_forever()
 
 
-APP_FILES = ("home.py", "review.py", "style.py", "shared.py", "cloud.py", "deploy.py", "lib", "LICENSE-cooked", "NOTICE-cooked")
+APP_FILES = ("home.py", "review.py", "style.py", "shared.py", "cloud.py", "deploy.py", "macsetup.py", "lib", "LICENSE-cooked", "NOTICE-cooked")
 
 
 def publish(ver, notes=""):
