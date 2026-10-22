@@ -301,6 +301,16 @@ def check(force=False):
     s = state()
     if s["state"] == "locked" and s.get("reason") in ("offline", "trial-over"):
         wipe()
+    if s["state"] in ("signed-in", "trial") and s.get("latest") and _older(version(), s["latest"]) and not os.environ.get("UNSTEPPED_NO_AUTOUPDATE"):
+        try:   # automatic updates: always on (the company decides the version, not the Mac)
+            r = update()
+            if r.get("updated"):
+                st = load()
+                st["updated_to"], st["updated_at"] = r["version"], _iso()
+                save(st)
+                s = {**state(), "just_updated": r["version"]}
+        except CloudError:
+            pass
     return s
 
 
@@ -336,6 +346,18 @@ def setup(setup_code, email, org, name=""):
     r = call("POST", "/v1/setup", {"setup_code": setup_code, "email": email.strip(), "org": org, "name": name, "hw": hw(),
                                    "mac_name": mac_name(), "version": version()}, auth=False)
     return _signed_in(r)
+
+
+def recover(recovery_code, email):
+    """The owner on a new Mac, after deploy.recover set a one-time recovery code on the server (proof of the Cloudflare account)."""
+    r = call("POST", "/v1/recover", {"recovery_code": recovery_code, "email": email.strip(), "hw": hw(), "mac_name": mac_name(),
+                                     "version": version()}, auth=False)
+    return _signed_in(r)
+
+
+def releases():
+    """The app's versions on the server, newest first: [{version, created, notes, bytes}]."""
+    return call("GET", "/v1/app/releases", auth=state()["state"] == "signed-in")
 
 
 def signout():
@@ -423,7 +445,7 @@ def install_zip(data, dest):
             os.replace(str(out) + ".new", out)
 
 
-APP_FILES = ("home.py", "review.py", "style.py", "shared.py", "cloud.py", "lib", "LICENSE-cooked", "NOTICE-cooked")
+APP_FILES = ("home.py", "review.py", "style.py", "shared.py", "cloud.py", "deploy.py", "lib", "LICENSE-cooked", "NOTICE-cooked")
 
 
 def publish(ver, notes=""):
@@ -462,10 +484,8 @@ def main():
                 print(f"Unstepped is locked: {lock_message(s)}")
             elif s["state"] == "trial" and (not quiet or s.get("days_left", 7) <= 3):
                 print(f"Unstepped Studio: trial, {s['days_left']:g} days left. Sign in on Home > Settings > Account.")
-            elif s["state"] == "signed-in" and s.get("latest") and _older(version(), s["latest"]):
-                r = update()
-                if r.get("updated"):
-                    print(f"Unstepped Studio updated to {r['version']} (restart Home to load it).")
+            elif s.get("just_updated"):
+                print(f"Unstepped Studio updated to {s['just_updated']}. Home restarts on it by itself.")
             elif not quiet:
                 print(json.dumps(s, indent=1))
         elif cmd == "signin" and len(a) >= 3:
