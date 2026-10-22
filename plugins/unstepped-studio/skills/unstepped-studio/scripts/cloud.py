@@ -28,9 +28,11 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -108,6 +110,48 @@ def mac_name():
         return "Mac"
 
 
+# A Mac (or its router) can remember a brand-new server address as "not found" for up to 30 minutes. When the normal
+# lookup fails for the Unstepped server (or any workers.dev address), ask Cloudflare's public DNS directly. The
+# connection still uses the real name, so the secure connection checks it's really this server.
+_real_getaddrinfo = socket.getaddrinfo
+_DOH = {}
+
+
+def _direct_ip(host):
+    hit = _DOH.get(host)
+    if hit and hit[1] > _now():
+        return hit[0]
+    try:
+        out = subprocess.run(["dig", "+short", "+time=3", "@1.1.1.1", host, "A"], capture_output=True, text=True, timeout=8).stdout.split()
+        ip = next((x for x in out if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", x)), None)
+    except (OSError, subprocess.TimeoutExpired):
+        ip = None
+    if ip:
+        _DOH[host] = (ip, _now() + 300)
+    return ip
+
+
+def _getaddrinfo(host, *a, **k):
+    try:
+        return _real_getaddrinfo(host, *a, **k)
+    except socket.gaierror:
+        srv = (server().split("//", 1) + [""])[1].split("/")[0].split(":")[0]
+        if isinstance(host, str) and (host == srv or host.endswith(".workers.dev")):
+            ip = _direct_ip(host)
+            if ip:
+                return _real_getaddrinfo(ip, *a, **k)
+        raise
+
+
+socket.getaddrinfo = _getaddrinfo
+
+
+def _plain(text):
+    """Header-safe text: a Mac called "Umair’s MacBook Pro" has a curly apostrophe, which headers can't carry."""
+    text = str(text).replace("\u2019", "'").replace("\u2018", "'").replace("\u201c", '"').replace("\u201d", '"')
+    return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+
+
 class CloudError(RuntimeError):
     def __init__(self, status, error, message="", extra=None):
         super().__init__(message or error)
@@ -120,7 +164,7 @@ def call(method, path, body=None, auth=True, data=None, stream_to=None, ctype=No
     if not srv:
         raise CloudError(0, "no-server", "Unstepped Cloud isn't set up on this Mac.")
     st = load()
-    h = {"x-unstepped-hw": hw(), "x-unstepped-version": version(), "x-unstepped-mac": mac_name()[:80], "user-agent": f"unstepped/{version()}"}
+    h = {"x-unstepped-hw": hw(), "x-unstepped-version": version(), "x-unstepped-mac": _plain(mac_name())[:80], "user-agent": f"unstepped/{version()}"}
     if auth and st.get("token"):
         h["authorization"] = f"Bearer {st['token']}"
     payload = None
