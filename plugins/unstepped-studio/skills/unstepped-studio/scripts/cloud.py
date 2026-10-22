@@ -378,10 +378,12 @@ def dashboard_link():
 def wipe():
     """Remove every shared style this Mac downloaded: its managed folder, Claude's link to its skill, Home's entry.
     The person's own styles and their video folders stay."""
-    sys.path.insert(0, str(ROOT))
-    import style as stylelib
-    reg = stylelib.jread(stylelib.REGISTRY, {}) or {"styles": {}}
-    shared = stylelib.jread(STATE / "shared.json", {}) or {}
+    rj = lambda f: json.loads(f.read_text(encoding="utf-8")) if f.is_file() else {}   # no app needed: a Mac at the sign-in page has only this file
+    try:
+        reg = rj(STATE / "styles.json") or {"styles": {}}
+        shared = rj(STATE / "shared.json") or {}
+    except ValueError:
+        reg, shared = {"styles": {}}, {}
     gone = []
     for sk, e in list(reg.get("styles", {}).items()):
         if not e.get("managed"):
@@ -394,8 +396,10 @@ def wipe():
         shared.pop(sk, None)
         gone.append(sk)
     if gone:
-        stylelib.jwrite(stylelib.REGISTRY, reg)
-        stylelib.jwrite(STATE / "shared.json", shared)
+        for f, d in ((STATE / "styles.json", reg), (STATE / "shared.json", shared)):
+            tmp = f.with_suffix(".tmp")
+            tmp.write_text(json.dumps(d, indent=1), encoding="utf-8")
+            tmp.replace(f)
     if MANAGED.is_dir():   # anything left over from an older install
         for d in MANAGED.iterdir():
             if d.name not in reg.get("styles", {}):
