@@ -466,16 +466,19 @@ def install_zip(data, dest):
 GATE_PORT = 47899
 AGENT = "com.unstepped.home"
 GATE_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Join Unstepped Studio</title><style>
-:root{--page:#12161d;--panel:#1a2029;--line:#2a323e;--ink:#f1f4f8;--body:#c9d1dc;--muted:#97a3b3;--brand:#2eb98c;--bad:#f87171}
-@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){--page:#f5f7fa;--panel:#fff;--line:#e3e8ef;--ink:#121821;--body:#2b3542;--muted:#5d6a7b}}
-*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--page);color:var(--body);font:15px/1.5 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;padding:16px}
+<title>Join Unstepped Studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet"><style>
+:root{--page:#12161D;--panel:#171C25;--line:rgba(255,255,255,.09);--ink:#E9E6DF;--body:rgba(233,230,223,.8);--muted:rgba(233,230,223,.56);--brand:#2EB98C;--bad:#E5484D;--field:#0F1318;
+  --sans:'IBM Plex Sans',system-ui,-apple-system,sans-serif;--mono:'IBM Plex Mono',ui-monospace,Menlo,monospace}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){--page:#F4F3EF;--panel:#FFFFFF;--line:rgba(18,22,29,.12);--ink:#14181F;--body:#2E3440;--muted:#5E6573;--field:#FAFAF8}}
+*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--page);color:var(--body);font:15px/1.5 var(--sans);-webkit-font-smoothing:antialiased;padding:16px}
 .box{width:min(420px,100%);background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:28px;display:flex;flex-direction:column;gap:12px}form{display:flex;flex-direction:column;gap:12px}
-.logo{font-weight:800;font-size:22px;color:var(--ink);letter-spacing:-.02em}.logo i{color:var(--brand);font-style:normal}h1{margin:0;font-size:20px;color:var(--ink)}p{margin:0;color:var(--muted);font-size:13.5px}p b{color:var(--ink)}
-input{font:inherit;height:42px;padding:0 12px;border-radius:10px;border:1px solid var(--line);background:var(--page);color:var(--ink)}input.code{font-family:ui-monospace,Menlo,monospace;letter-spacing:.06em}
-button{font:inherit;font-weight:700;height:42px;border:0;border-radius:10px;background:var(--brand);color:#06130e;cursor:pointer}button:disabled{opacity:.6;cursor:wait}
+.logo{font-weight:600;font-size:22px;color:var(--ink);letter-spacing:-.02em}.logo i{color:var(--brand);font-style:normal}h1{margin:0;font-size:22px;font-weight:600;letter-spacing:-.015em;color:var(--ink)}p{margin:0;color:var(--muted);font-size:13.5px}p b{color:var(--ink)}
+input{font:inherit;height:42px;padding:0 12px;border-radius:10px;border:1px solid var(--line);background:var(--field);color:var(--ink)}input:focus{outline:none;border-color:var(--brand)}input.code{font-family:var(--mono);letter-spacing:.08em}
+button{font:inherit;font-weight:600;height:42px;border:0;border-radius:10px;background:var(--brand);color:#06140E;cursor:pointer;transition:transform .12s cubic-bezier(.23,1,.32,1),filter .15s}button:hover{filter:brightness(1.07)}button:active{transform:scale(.97)}button:disabled{opacity:.6;cursor:wait}
 .links{display:flex;justify-content:space-between;gap:12px;font-size:13px}.links a{color:var(--muted)}.links a:hover{color:var(--ink)}
-.step{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--brand)}#msg{min-height:20px;font-size:13px}#msg.bad{color:var(--bad)}</style></head><body>
+.step{display:flex;align-items:center;gap:7px;font:500 11px/14px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}.step::before{content:'';width:7px;height:7px;border-radius:50%;background:var(--brand);box-shadow:0 0 0 3px rgba(46,185,140,.2)}#msg{min-height:20px;font-size:13px}#msg.bad{color:var(--bad)}</style></head><body>
 <div class="box"><div class="logo"><i>/</i> unstepped</div>
 <form id="fa"><div class="step">Step 1 of 2</div><h1>Join Unstepped Studio</h1>
 <p>Enter your name and work email. Your admin gets an email with a sign-in code for you, and you enter it on the next step.</p>
