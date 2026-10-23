@@ -12,14 +12,14 @@ admin sent you.
 1. Add this marketplace and install the plugin. In a Claude Code session:
 
    ```
-   /plugin marketplace add OWNER/REPO
+   /plugin marketplace add Umairshaffi/Unstepped-Studio
    /plugin install unstepped-studio@unstepped
    ```
 
    or in Terminal:
 
    ```
-   claude plugin marketplace add OWNER/REPO
+   claude plugin marketplace add Umairshaffi/Unstepped-Studio
    claude plugin install unstepped-studio@unstepped
    ```
 
