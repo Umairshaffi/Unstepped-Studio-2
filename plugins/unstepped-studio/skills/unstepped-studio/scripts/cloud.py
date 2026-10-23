@@ -596,7 +596,7 @@ def gate(open_browser=True, port=GATE_PORT):
     srv.serve_forever()
 
 
-APP_FILES = ("home.py", "review.py", "style.py", "shared.py", "cloud.py", "deploy.py", "macsetup.py", "studio.py", "lib", "LICENSE-cooked", "NOTICE-cooked")
+APP_FILES = ("home.py", "review.py", "style.py", "shared.py", "cloud.py", "deploy.py", "macsetup.py", "studio.py", "rules.py", "lib", "LICENSE-cooked", "NOTICE-cooked")
 
 
 def publish(ver, notes=""):

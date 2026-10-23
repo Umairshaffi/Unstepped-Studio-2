@@ -9,8 +9,9 @@ A local web app for an editing team that works through Claude Code:
 
 - **Home** (`home.py`, port 47900): **Videos** (one folder per style, cards that scrub on hover, status of
   every edit), **Styles** (each style's guide, brief, references, B-roll, graphics, fonts and colours),
-  **+ New style** (a brief: references, brand files, preferences, a main folder), **New video** (raw footage + a
-  first message, handed to the style's parent session), **Settings** (API keys, tools, home folder, alerts).
+  **+ New style** (a brief: references, brand files, preferences, a main folder), **New video** (one folder with the
+  footage, or A-roll, B-roll and voiceover, plus any files and notes; handed to the style's parent session),
+  **Settings** (API keys, tools, home folder, alerts).
 - **Review page** (`review.py`, one per edit): watch the draft, leave notes on exact moments (or on a layer in the
   live HyperFrames Studio preview), Submit them to Claude, approve. Approving the final draft adds its media to the
   style's library.
@@ -38,8 +39,8 @@ signed in, setup just repairs and starts Home. Updates and the team's skills sta
 
 `python3 ~/unstepped-review/cloud.py status` says where this Mac stands: signed-in, or locked (not signed in yet, signed
 out, logged out by the admin, offline too long, or an update needed). Restarts never sign anyone out. When it's locked, Home shows a
-sign-in screen and `review.py`, `style.py` and `shared.py` refuse to run: tell the user to sign in on Home >
-Settings > Account; don't try to get around it. Signing out, or an admin's logout, removes the shared styles this Mac
+sign-in screen and `review.py`, `style.py` and `shared.py` refuse to run: tell the user to sign in on Home's sign-in
+screen (Settings > Account); don't try to get around it. Signing out, or an admin's logout, removes the shared styles this Mac
 downloaded; the person's own styles and video projects stay. Admins open the team dashboard from Home > Settings >
 Account (people, Macs, codes, activity, logout).
 
@@ -66,11 +67,15 @@ Claude subsession (one per video)       <->  videos/<video>/  raw/, files/, proj
   `brief/PARENT.md`: it asks for anything missing from the brief (never guesses), watches the references with the
   `analyze` skill, confirms its reading with the user, writes `GUIDE.md`, picks the editing skills, then asks for the
   raw footage. Only the parent writes `GUIDE.md`.
-- **New video** (Home > New video): style, raw footage, other files, first message. Home makes
-  `videos/<name>/`, writes its `VIDEO.md`, copies a message to the clipboard and opens the parent session; the user
-  pastes and sends it, and the parent starts the video's subsession with `start_session` (prompt: that `VIDEO.md`),
-  then records it: `python3 ~/unstepped-review/style.py video <style> "<name>" --session <local_ id>`.
-- **The subsession** edits with the skills the guide names, builds in `project/`, and opens each draft for review:
+- **New video** (Home > New video): the style, the footage (one folder with it all, or A-roll in `raw/`, B-roll in
+  `raw/b-roll/`, voiceover in `raw/voiceover/`), other files, and notes. **Start the session** makes `videos/<name>/`,
+  writes its `VIDEO.md`, copies a message to the clipboard and opens the parent session; the user pastes and sends it,
+  and the parent starts the video's subsession with `start_session`, then records it:
+  `python3 ~/unstepped-review/style.py video <style> "<name>" --session <local_ id>`. From a plain session:
+  `python3 ~/unstepped-review/studio.py new-video <style> "<name>" --raw <file> --broll <file> --voiceover <file> --folder <dir>`.
+- **The subsession** analyses the footage first (sorting a folder into A-roll, B-roll and voiceover), posts what it
+  found and asks the user in its chat for the prompt to start the edit; it never edits before that. Then it edits with
+  the skills the guide names, builds in `project/`, and opens each draft for review:
 
 ```bash
 python3 ~/unstepped-review/review.py "<main>/videos/<name>/edit" start --video <draft.mp4> --project "<main>/videos/<name>/project" --style <style>
@@ -80,8 +85,11 @@ python3 ~/unstepped-review/review.py "<edit>" resolve <id> fixed --reply "..."
 ```
 
   `start` opens the review page in the browser. `wait` prints each note with its time, the element or layer it was
-  left on, and the frame. Lasting lessons go in `videos/<name>/lessons.md`; on the final approve the media joins the
-  library and the subsession reports to the parent, which folds the lessons into `GUIDE.md`.
+  left on, and the frame. After each round the subsession reads every note with what it did for it and saves what it
+  taught as a rule (`review.py <edit> learn`): rules go in the style skill's "## Learned rules", near-duplicates are
+  checked and repeats counted ("Said 3x"). On an editor's Mac a shared style's rules wait in its library until the
+  owner's Mac adds them. Anything a one-line rule can't hold goes in `videos/<name>/lessons.md`; on the final approve
+  the media joins the library and the parent folds the lessons into `GUIDE.md` (Home shows "lessons waiting").
 
 ## Style libraries
 

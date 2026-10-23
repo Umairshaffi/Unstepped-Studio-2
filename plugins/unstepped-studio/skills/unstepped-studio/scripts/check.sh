@@ -1,5 +1,5 @@
 #!/bin/bash
-# Claude session start: check in with Unstepped Cloud (a logout from the admin, the trial, app updates).
+# Claude session start: check in with Unstepped Cloud (a logout from the admin, app updates).
 # Quiet unless something needs doing. Its output reaches the session.
 APP="$HOME/unstepped-review/cloud.py"
 if [ -f "$APP" ]; then
