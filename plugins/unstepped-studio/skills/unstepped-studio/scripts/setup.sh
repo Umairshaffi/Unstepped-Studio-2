@@ -9,7 +9,7 @@ PY=/usr/bin/python3
 SERVER="$(tr -d ' \n' < "$DIR/server.txt")"
 case "$SERVER" in *REPLACE-ME*) echo "This installer has no server address yet (scripts/server.txt)."; exit 1;; esac
 mkdir -p "$DEST/home"
-[ -f "$DEST/cloud.py" ] || cp "$DIR/cloud.py" "$DEST/cloud.py"
+[ -f "$DEST/home.py" ] || cp "$DIR/cloud.py" "$DEST/cloud.py"   # the app isn't here yet: this installer's sign-in page
 [ -f "$DEST/VERSION" ] || echo 0.0.0 > "$DEST/VERSION"
 $PY "$DEST/cloud.py" server "$SERVER" >/dev/null 2>&1 || true
 if $PY "$DEST/cloud.py" status | grep -q '"state": "signed-in"'; then
@@ -22,4 +22,4 @@ pkill -f "unstepped-review/cloud.py gate" 2>/dev/null || true
 nohup $PY "$DEST/cloud.py" gate > "$DEST/home/gate.log" 2>&1 &
 for i in $(seq 1 20); do grep -q "^http" "$DEST/home/gate.log" 2>/dev/null && break; sleep 0.25; done
 echo "A sign-in page opened in your browser: $(head -1 "$DEST/home/gate.log")"
-echo "Sign in there with your work email and the code from your admin; Unstepped Studio installs and opens by itself."
+echo "Ask to join there with your name and work email (your admin is emailed your code), or use a code you already have; Unstepped Studio installs and opens by itself."

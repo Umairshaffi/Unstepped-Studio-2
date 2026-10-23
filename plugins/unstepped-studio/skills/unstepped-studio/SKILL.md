@@ -28,8 +28,10 @@ user asks to set up Unstepped Studio, run
 bash "${CLAUDE_PLUGIN_ROOT}/skills/unstepped-studio/scripts/setup.sh"
 ```
 
-On a new Mac it opens a sign-in page in the browser: the person signs in there with their work email and the one-time
-code their admin gave them (never ask for the code in chat, never guess one). Then the app installs, Home is set to start
+On a new Mac it opens a sign-in page in the browser. The person asks to join there with their name and work email
+(Request access): the company's owner is emailed a one-time code for them and passes it on, and they enter it on the
+same page. If their admin already gave them a code, "I already have a code" takes it straight away. Never ask for the
+code in chat, never guess one. Then the app installs, Home is set to start
 at login, and it opens straight onto Home > Setup: Apple's developer tools, Homebrew (it asks for the Mac's password once,
 in a Terminal window), FFmpeg, Node, yt-dlp, uv, the HyperFrames engine, the editing Python and models, and the
 company's video skills (installed into ~/.claude/skills). The person adds their API keys last. On a Mac that's already

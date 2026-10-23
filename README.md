@@ -6,8 +6,7 @@ this repository has no app code and no client material.
 
 ## Install (team members)
 
-You need a Mac, Claude Code (the Claude desktop app's Code tab, or `claude` in Terminal), and the sign-in code your
-admin sent you.
+You need a Mac, Claude Code (the Claude desktop app's Code tab, or `claude` in Terminal), and your work email.
 
 1. Add this marketplace and install the plugin. In a Claude Code session:
 
@@ -24,9 +23,10 @@ admin sent you.
    ```
 
 2. Start a new Claude session and say **"set up Unstepped Studio"**.
-3. A sign-in page opens in your browser. Sign in with your work email and the one-time code from your admin. Unstepped
-   Studio downloads, Home opens on Setup, and it installs what editing needs (it asks for your Mac's password once, for
-   Homebrew). Add your API keys at the end.
+3. A sign-in page opens in your browser. Enter your name and work email and press **Request access**: your admin gets
+   an email with your one-time code. When they send it to you, enter it on the same page. (Already have a code from your
+   admin? Choose **I already have a code**.) Unstepped Studio downloads, Home opens on Setup, and it installs what
+   editing needs (it asks for your Mac's password once, for Homebrew). Add your API keys at the end.
 
 After that Home starts by itself when you log in, and updates install by themselves. Restarting never signs you out.
 

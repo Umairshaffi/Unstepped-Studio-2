@@ -335,6 +335,13 @@ def signin(email, code):
     return _signed_in(r)
 
 
+def request_access(email, name):
+    """A new Mac asks to join (its sign-in page): the server emails the company's owner a code for this person, and
+    the owner passes it on. Returns {org, emailed}."""
+    return call("POST", "/v1/request", {"email": email.strip(), "name": name.strip(), "hw": hw(), "mac_name": mac_name(),
+                                        "version": version()}, auth=False)
+
+
 def setup(setup_code, email, org, name=""):
     r = call("POST", "/v1/setup", {"setup_code": setup_code, "email": email.strip(), "org": org, "name": name, "hw": hw(),
                                    "mac_name": mac_name(), "version": version()}, auth=False)
@@ -459,28 +466,46 @@ def install_zip(data, dest):
 GATE_PORT = 47899
 AGENT = "com.unstepped.home"
 GATE_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sign in to Unstepped</title><style>
+<title>Join Unstepped Studio</title><style>
 :root{--page:#12161d;--panel:#1a2029;--line:#2a323e;--ink:#f1f4f8;--body:#c9d1dc;--muted:#97a3b3;--brand:#2eb98c;--bad:#f87171}
 @media (prefers-color-scheme: light){:root:not([data-theme="dark"]){--page:#f5f7fa;--panel:#fff;--line:#e3e8ef;--ink:#121821;--body:#2b3542;--muted:#5d6a7b}}
-*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--page);color:var(--body);font:15px/1.5 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;padding:16px}
-.box{width:min(420px,100%);background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:28px;display:flex;flex-direction:column;gap:12px}
-.logo{font-weight:800;font-size:22px;color:var(--ink);letter-spacing:-.02em}.logo i{color:var(--brand);font-style:normal}h1{margin:0;font-size:20px;color:var(--ink)}p{margin:0;color:var(--muted);font-size:13.5px}
+*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--page);color:var(--body);font:15px/1.5 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;padding:16px}
+.box{width:min(420px,100%);background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:28px;display:flex;flex-direction:column;gap:12px}form{display:flex;flex-direction:column;gap:12px}
+.logo{font-weight:800;font-size:22px;color:var(--ink);letter-spacing:-.02em}.logo i{color:var(--brand);font-style:normal}h1{margin:0;font-size:20px;color:var(--ink)}p{margin:0;color:var(--muted);font-size:13.5px}p b{color:var(--ink)}
 input{font:inherit;height:42px;padding:0 12px;border-radius:10px;border:1px solid var(--line);background:var(--page);color:var(--ink)}input.code{font-family:ui-monospace,Menlo,monospace;letter-spacing:.06em}
 button{font:inherit;font-weight:700;height:42px;border:0;border-radius:10px;background:var(--brand);color:#06130e;cursor:pointer}button:disabled{opacity:.6;cursor:wait}
-#msg{min-height:20px;font-size:13px}#msg.bad{color:var(--bad)}</style></head><body>
-<form class="box" id="f"><div class="logo"><i>/</i> unstepped</div><h1>Sign in to Unstepped Studio</h1>
-<p>Use your work email and the one-time code your admin sent you. Unstepped Studio installs on this Mac once you're signed in.</p>
+.links{display:flex;justify-content:space-between;gap:12px;font-size:13px}.links a{color:var(--muted)}.links a:hover{color:var(--ink)}
+.step{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--brand)}#msg{min-height:20px;font-size:13px}#msg.bad{color:var(--bad)}</style></head><body>
+<div class="box"><div class="logo"><i>/</i> unstepped</div>
+<form id="fa"><div class="step">Step 1 of 2</div><h1>Join Unstepped Studio</h1>
+<p>Enter your name and work email. Your admin gets an email with a sign-in code for you, and you enter it on the next step.</p>
+<input id="name" placeholder="Your name" autocomplete="name" required><input id="aemail" type="email" placeholder="Work email" autocomplete="email" required>
+<button id="ago">Request access</button><div class="links"><a href="#" id="tocode">I already have a code</a></div></form>
+<form id="fc" hidden><div class="step" id="cstep">Step 2 of 2</div><h1>Enter your code</h1><p id="sent"></p>
 <input id="email" type="email" placeholder="Work email" autocomplete="email" required><input id="code" class="code" placeholder="Code: K7QF-2MXP-9R4T" autocomplete="one-time-code" required>
-<button id="go">Sign in</button><div id="msg"></div></form>
+<button id="go">Sign in</button><div class="links"><a href="#" id="toask">Use a different email</a><a href="#" id="again" hidden>Ask again</a></div></form>
+<div id="msg"></div></div>
 <script>
-const $=id=>document.getElementById(id),T=new URLSearchParams(location.search).get('t')||'';
+const $=id=>document.getElementById(id),T=new URLSearchParams(location.search).get('t')||'';let A=null;
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const msg=(t,bad)=>{$('msg').textContent=t;$('msg').className=bad?'bad':''};
+const show=p=>{$('fa').hidden=p!=='ask';$('fc').hidden=p!=='code';msg('')};
+const post=(p,b)=>fetch(p+'?t='+T,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b)});
+function asked(a){A=a;$('email').value=a.email;$('cstep').hidden=false;$('toask').textContent='Use a different email';
+  $('sent').innerHTML=a.emailed?`We've asked ${esc(a.org)}'s admin to let you in as <b>${esc(a.email)}</b>. When they send you your code, enter it here.`
+    :`Your request is waiting on ${esc(a.org)}'s team dashboard. When your admin sends you your code, enter it here.`;$('again').hidden=false;show('code');$('code').focus()}
+async function ask(b){const r=await post('/request',b),j=await r.json().catch(()=>({}));if(!r.ok){msg(j.error||'Not sent',true);return false}asked(j);return true}
 async function poll(){const r=await (await fetch('/status?t='+T)).json();msg(r.message,r.phase==='failed');
   if(r.phase==='done'&&r.url){location.href=r.url;return}if(r.phase==='failed'){$('go').disabled=false;return}setTimeout(poll,800)}
-$('f').onsubmit=async e=>{e.preventDefault();$('go').disabled=true;msg('Signing in…');
-  const r=await fetch('/signin?t='+T,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email:$('email').value,code:$('code').value})});
+$('fa').onsubmit=async e=>{e.preventDefault();$('ago').disabled=true;msg('Sending your request…');await ask({name:$('name').value,email:$('aemail').value});$('ago').disabled=false};
+$('fc').onsubmit=async e=>{e.preventDefault();$('go').disabled=true;msg('Signing in…');
+  const r=await post('/signin',{email:$('email').value,code:$('code').value});
   const j=await r.json();if(!r.ok){msg(j.error||'Not signed in',true);$('go').disabled=false;return}poll()};
-fetch('/status?t='+T).then(r=>r.json()).then(r=>{if(r.phase!=='idle')poll()});
+$('tocode').onclick=e=>{e.preventDefault();$('email').value=$('email').value||$('aemail').value;$('cstep').hidden=true;$('again').hidden=true;
+  $('sent').textContent='Enter your work email and the one-time code your admin sent you.';$('toask').textContent='Request access instead';show('code')};
+$('toask').onclick=e=>{e.preventDefault();show('ask')};
+$('again').onclick=async e=>{e.preventDefault();if(!A)return;msg('Asking again…');if(await ask({name:A.name,email:A.email}))msg('Asked again.')};
+fetch('/status?t='+T).then(r=>r.json()).then(r=>{if(r.ask&&r.ask.email)asked(r.ask);if(r.phase==='running'||r.phase==='done')poll()});
 </script></body></html>"""
 
 
@@ -523,14 +548,16 @@ def start_home():
 
 
 def gate(open_browser=True, port=GATE_PORT):
-    """The sign-in page a new Mac sees first. Nothing of the app is on the Mac until this succeeds: then it downloads
-    the app, sets Home to start at login, starts it and hands over (the page goes to Home)."""
+    """The sign-in page a new Mac sees first: Request access (name and work email; the company's owner is emailed a
+    code for them), then the code. Nothing of the app is on the Mac until the sign-in succeeds: then it downloads the
+    app, sets Home to start at login, starts it and hands over (the page goes to Home)."""
     import secrets as _s
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from urllib.parse import parse_qs, urlsplit
     tok = _s.token_urlsafe(24)
     job = {"phase": "idle", "message": ""}
+    asked = {}   # this page's request to join, so a reload still shows the code step
 
     def work(email, code):
         try:
@@ -574,15 +601,27 @@ def gate(open_browser=True, port=GATE_PORT):
             if p == "/":
                 return self.send(200, GATE_HTML.encode(), "text/html; charset=utf-8")
             if p == "/status":
-                return self.send(200, job)
+                return self.send(200, {**job, "ask": asked})
             return self.send(404, {})
 
         def do_POST(self):
-            if not self.ok() or urlsplit(self.path).path != "/signin":
+            p = urlsplit(self.path).path
+            if not self.ok() or p not in ("/signin", "/request"):
                 return self.send(403, {"error": "not allowed"})
             if job["phase"] == "running":
                 return self.send(409, {"error": "Already signing in."})
             b = json.loads(self.rfile.read(int(self.headers.get("content-length") or 0)) or b"{}")
+            if p == "/request":
+                name, email = str(b.get("name") or "").strip(), str(b.get("email") or "").strip()
+                if not name or not re.match(r"^[^\s@]+@[^\s@]+\.[a-z]{2,}$", email, re.I):
+                    return self.send(400, {"error": "Enter your name and your work email."})
+                try:
+                    r = request_access(email, name)
+                except CloudError as e:
+                    return self.send(400, {"error": e.message or "The request didn't go through. Check the internet connection and try again."})
+                asked.clear()
+                asked.update(name=name, email=email, org=r.get("org") or "your company", emailed=bool(r.get("emailed")))
+                return self.send(200, asked)
             if not re.match(r"^[^\s@]+@[^\s@]+\.[a-z]{2,}$", b.get("email") or "", re.I) or len(re.sub(r"[^A-Za-z0-9]", "", b.get("code") or "")) < 8:
                 return self.send(400, {"error": "Enter your work email and the code from your admin."})
             threading.Thread(target=work, args=(b["email"], b["code"]), daemon=True).start()
