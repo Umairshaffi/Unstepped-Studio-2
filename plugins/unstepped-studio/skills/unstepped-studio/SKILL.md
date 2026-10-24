@@ -28,7 +28,8 @@ user asks to set up Unstepped Studio, run
 bash "${CLAUDE_PLUGIN_ROOT}/skills/unstepped-studio/scripts/setup.sh"
 ```
 
-On a new Mac it opens a sign-in page in the browser. The person asks to join there with their name and work email
+On a new Mac it starts a sign-in page and prints its address: open that in the Claude app's built-in browser beside
+the chat (preview_start with the url), never the system browser. The person asks to join there with their name and work email
 (Request access): the company's owner is emailed a one-time code for them and passes it on, and they enter it on the
 same page. If their admin already gave them a code, "I already have a code" takes it straight away. Never ask for the
 code in chat, never guess one. Then the app installs, Home is set to start
@@ -49,11 +50,12 @@ Account (people, Macs, codes, activity, logout).
 ## Start Home
 
 ```bash
-/usr/bin/python3 ~/unstepped-review/home.py serve          # opens the browser; run it in the background
+/usr/bin/python3 ~/unstepped-review/home.py serve          # prints Home's address; run it in the background
 ```
 
-Its URL carries a login token (`?t=...`); `~/unstepped-review/home/token` holds it. `serve --no-open` skips the
-browser. Only one Home runs at a time; starting it again just prints the running URL.
+Its URL carries a login token (`?t=...`); `~/unstepped-review/home/token` holds it. Open it in the Claude app's built-in
+browser (preview_start with the url); Unstepped never opens Chrome or the system browser, and HyperFrames Studio only
+runs in the background (`--no-open`). Only one Home runs at a time; starting it again just prints the running URL.
 
 ## How the work is organised
 
@@ -86,7 +88,7 @@ python3 ~/unstepped-review/review.py "<edit>" round --video <next.mp4> --changed
 python3 ~/unstepped-review/review.py "<edit>" resolve <id> fixed --reply "..."
 ```
 
-  `start` opens the review page in the browser. `wait` prints each note with its time, the element or layer it was
+  `start` starts the review page and prints its address (open it in the Claude app's built-in browser). `wait` prints each note with its time, the element or layer it was
   left on, and the frame. After each round the subsession reads every note with what it did for it and saves what it
   taught as a rule (`review.py <edit> learn`): rules go in the style skill's "## Learned rules", near-duplicates are
   checked and repeats counted ("Said 3x"). On an editor's Mac a shared style's rules wait in its library until the

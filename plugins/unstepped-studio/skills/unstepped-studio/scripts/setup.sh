@@ -1,6 +1,7 @@
 #!/bin/bash
 # Installs Unstepped Studio on this Mac. Nothing of the app is downloaded until the person signs in: a new Mac gets
-# a sign-in page first (in the browser), then the app installs, Home is set to start at login, and it opens.
+# a sign-in page first (shown in the Claude app's built-in browser), then the app installs, Home is set to start at
+# login, and it opens. Nothing here opens the system browser.
 # Run again to repair. Never touches ~/unstepped-review/home/ (account, styles, settings).
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -15,11 +16,11 @@ $PY "$DEST/cloud.py" server "$SERVER" >/dev/null 2>&1 || true
 if $PY "$DEST/cloud.py" status | grep -q '"state": "signed-in"'; then
   $PY "$DEST/cloud.py" update >/dev/null 2>&1 || true
   URL="$($PY "$DEST/cloud.py" start)"
-  echo "Unstepped Studio $(cat "$DEST/VERSION") is installed and signed in. Home: $URL"
+  echo "Unstepped Studio $(cat "$DEST/VERSION") is installed and signed in. Open Home in the Claude app's built-in browser (preview_start with this url): $URL"
   exit 0
 fi
 pkill -f "unstepped-review/cloud.py gate" 2>/dev/null || true
-nohup $PY "$DEST/cloud.py" gate > "$DEST/home/gate.log" 2>&1 &
+nohup $PY "$DEST/cloud.py" gate --no-open > "$DEST/home/gate.log" 2>&1 &
 for i in $(seq 1 20); do grep -q "^http" "$DEST/home/gate.log" 2>/dev/null && break; sleep 0.25; done
-echo "A sign-in page opened in your browser: $(head -1 "$DEST/home/gate.log")"
+echo "The sign-in page is ready. Open it in the Claude app's built-in browser (preview_start with this url): $(head -1 "$DEST/home/gate.log")"
 echo "Ask to join there with your name and work email (your admin is emailed your code), or use a code you already have; Unstepped Studio installs and opens by itself."

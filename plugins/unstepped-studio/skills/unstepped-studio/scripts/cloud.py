@@ -160,8 +160,14 @@ class CloudError(RuntimeError):
         self.status, self.error, self.message, self.extra = status, error, message or error, extra or {}
 
 
-def call(method, path, body=None, auth=True, data=None, stream_to=None, ctype=None, timeout=30, headers=None, with_headers=False):
-    """A request to the server. JSON in and out unless data= (raw upload) or stream_to= (a download to a file)."""
+class Stopped(Exception):
+    """A download stopped part way on purpose (paused or cancelled on Home): the half-written file is gone."""
+
+
+def call(method, path, body=None, auth=True, data=None, stream_to=None, ctype=None, timeout=30, headers=None, with_headers=False,
+         stop=None, tick=None):
+    """A request to the server. JSON in and out unless data= (raw upload) or stream_to= (a download to a file). While
+    streaming, stop() returning true ends it (Stopped) and tick(bytes so far) follows it."""
     srv = server()
     if not srv:
         raise CloudError(0, "no-server", "Unstepped Cloud isn't set up on this Mac.")
@@ -192,8 +198,20 @@ def call(method, path, body=None, auth=True, data=None, stream_to=None, ctype=No
         if stream_to:
             Path(stream_to).parent.mkdir(parents=True, exist_ok=True)
             tmp = Path(str(stream_to) + ".part")
+            got = 0
             with open(tmp, "wb") as f:
-                shutil.copyfileobj(r, f, 1 << 20)
+                while True:
+                    if stop and stop():
+                        f.close()
+                        tmp.unlink(missing_ok=True)
+                        raise Stopped()
+                    b = r.read(1 << 20)
+                    if not b:
+                        break
+                    f.write(b)
+                    got += len(b)
+                    if tick:
+                        tick(got)
             tmp.replace(stream_to)
             return dict(r.headers)
         raw = r.read()
@@ -377,6 +395,52 @@ def event(kind, **detail):
         pass
 
 
+REPORTS = STATE / "reports-queue.json"   # reports written while offline: sent at the next check-in
+
+
+def report(title, details="", kind="bug", area=None, style=None, video=None):
+    """Something went wrong on this Mac (or the user said so): to the owner's Reports list on the dashboard. Offline,
+    it waits in home/reports-queue.json and goes at the next check-in. Returns {"ok", "id"} or {"queued": True}."""
+    r = {"title": str(title or "").strip()[:200], "details": str(details or "")[:6000], "kind": kind if kind in ("bug", "idea", "flag") else "bug",
+         "area": area, "style": style, "video": video, "version": version(), "at": _now()}
+    if not r["title"]:
+        raise CloudError(0, "bad-request", "Say what went wrong in a line.")
+    try:
+        if not load().get("token"):
+            raise CloudError(0, "offline", "not signed in")
+        return call("POST", "/v1/report", r)
+    except CloudError as e:
+        if e.status and e.status != 429:
+            raise
+        q = json.loads(REPORTS.read_text(encoding="utf-8")) if REPORTS.is_file() else []
+        q.append(r)
+        REPORTS.write_text(json.dumps(q[-200:], indent=1), encoding="utf-8")
+        return {"queued": True, "waiting": len(q)}
+
+
+def flush_reports():
+    """The reports written while offline, sent now (Home's check-in)."""
+    if not REPORTS.is_file():
+        return 0
+    try:
+        q = json.loads(REPORTS.read_text(encoding="utf-8"))
+    except ValueError:
+        q = []
+    left, sent = [], 0
+    for r in q:
+        try:
+            call("POST", "/v1/report", r)
+            sent += 1
+        except CloudError as e:
+            if not e.status or e.status == 429:
+                left.append(r)
+    if left:
+        REPORTS.write_text(json.dumps(left, indent=1), encoding="utf-8")
+    else:
+        REPORTS.unlink(missing_ok=True)
+    return sent
+
+
 def dashboard_link():
     return call("POST", "/v1/admin/link", {})["url"]
 
@@ -420,6 +484,21 @@ def wipe():
         t2 = re.sub(r"\n*<!-- unstepped-studio:start.*?<!-- unstepped-studio:end -->\n?", "\n", t, flags=re.S).strip()
         if t2 != t.strip():
             md.write_text(t2 + "\n" if t2 else "", encoding="utf-8")
+    sf = Path.home() / ".claude" / "settings.json"   # and the hook that kept it inside the Claude app
+    try:
+        sd = json.loads(sf.read_text(encoding="utf-8")) if sf.is_file() else None
+        pre = ((sd or {}).get("hooks") or {}).get("PreToolUse")
+        if isinstance(pre, list):
+            keep = [e for e in pre if "unstepped-review/lib/browserguard.py" not in json.dumps(e)]
+            if keep != pre:
+                sd["hooks"]["PreToolUse"] = keep
+                if not keep:
+                    sd["hooks"].pop("PreToolUse")
+                if not sd["hooks"]:
+                    sd.pop("hooks")
+                sf.write_text(json.dumps(sd, indent=2) + "\n", encoding="utf-8")
+    except (OSError, ValueError, AttributeError):
+        pass
     if MANAGED.is_dir():   # anything left over from an older install
         for d in MANAGED.iterdir():
             if d.name not in reg.get("styles", {}):
@@ -690,7 +769,7 @@ def main():
         elif cmd == "publish" and len(a) >= 2:
             print(json.dumps(publish(a[1], a[2] if len(a) > 2 else "")))
         elif cmd == "gate":
-            gate(open_browser="--no-open" not in a)
+            gate(open_browser="--open" in a)   # the installing session shows it in the Claude app's built-in browser
         elif cmd == "start":
             print(start_home() or "Home didn't start")
         elif cmd == "server" and len(a) == 2:
