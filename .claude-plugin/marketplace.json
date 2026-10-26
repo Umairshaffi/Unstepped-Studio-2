@@ -11,7 +11,7 @@
       "name": "unstepped-studio",
       "source": "./plugins/unstepped-studio",
       "description": "Installer for Unstepped Studio: Home and the review page for client video edits, with sign-in, shared styles and updates from your company's Unstepped Cloud.",
-      "version": "2.2.4",
+      "version": "2.2.5",
       "category": "productivity"
     }
   ]

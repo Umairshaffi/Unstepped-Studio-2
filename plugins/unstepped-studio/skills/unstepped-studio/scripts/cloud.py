@@ -48,6 +48,7 @@ FILE = STATE / "cloud.json"
 MANAGED = Path.home() / "Library" / "Application Support" / "Unstepped" / "shared"
 CHECK_EVERY = 180          # seconds between check-ins (Home's background thread, Claude's start-up hook)
 KEEP = ("home", "backups", "test", "venv", "models", "state", "__pycache__")   # never replaced by an app update
+UPDATING = {}   # {"to", "at"} while a new version is being installed: Home's page shows its updating screen
 
 
 def _now():
@@ -91,25 +92,52 @@ def server():
     return (os.environ.get("UNSTEPPED_CLOUD") or load().get("server") or "").rstrip("/")
 
 
+def _uuid():
+    """This Mac's hardware UUID, or None when it can't be read right now (a busy Mac, too many open files)."""
+    for cmd, pat in ((["/usr/sbin/ioreg", "-rd1", "-c", "IOPlatformExpertDevice"], r'"IOPlatformUUID"\s*=\s*"([^"]+)"'),
+                     (["/usr/sbin/system_profiler", "SPHardwareDataType"], r"Hardware UUID:\s*(\S+)")):
+        for _ in range(2):
+            try:
+                m = re.search(pat, subprocess.run(cmd, capture_output=True, text=True, timeout=20).stdout)
+                if m:
+                    return m.group(1)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            time.sleep(0.3)
+    return None
+
+
+_HW = {}
+
+
 def hw():
-    """This Mac, as the server knows it: a hash of the hardware UUID (the UUID itself never leaves the Mac)."""
+    """This Mac, as the server knows it: a hash of the hardware UUID (the UUID itself never leaves the Mac). When the
+    UUID can't be read for a moment it's the one this Mac signed in with, never a made-up one: a made-up one reads as a
+    copied sign-in and locks the Mac out (Rizwan's Mac, the minute 2.2.3 installed)."""
     if os.environ.get("UNSTEPPED_HW"):   # tests: pretend to be another Mac
         return hashlib.sha256(os.environ["UNSTEPPED_HW"].encode()).hexdigest()
-    try:
-        out = subprocess.run(["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"], capture_output=True, text=True, timeout=10).stdout
-        u = re.search(r'"IOPlatformUUID"\s*=\s*"([^"]+)"', out).group(1)
-    except (OSError, AttributeError, subprocess.TimeoutExpired):
-        u = f"{os.uname().nodename}-{Path.home()}"
-    return hashlib.sha256(f"unstepped|{u}".encode()).hexdigest()
+    if "hw" not in _HW:
+        u = _uuid()
+        if not u:
+            if load().get("hw"):
+                return load()["hw"]
+            raise CloudError(0, "no-hw", "Couldn't read this Mac's hardware ID just now. Try again in a moment.")
+        _HW["hw"] = hashlib.sha256(f"unstepped|{u}".encode()).hexdigest()
+    return _HW["hw"]
 
 
 def mac_name():
     if os.environ.get("UNSTEPPED_MAC"):
         return os.environ["UNSTEPPED_MAC"]
-    try:
-        return subprocess.run(["scutil", "--get", "ComputerName"], capture_output=True, text=True, timeout=5).stdout.strip() or "Mac"
-    except OSError:
-        return "Mac"
+    if "name" not in _HW:
+        try:
+            n = subprocess.run(["/usr/sbin/scutil", "--get", "ComputerName"], capture_output=True, text=True, timeout=10).stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            n = ""
+        if not n:
+            return load().get("mac_name") or "Mac"
+        _HW["name"] = n
+    return _HW["name"]
 
 
 # A Mac (or its router) can remember a brand-new server address as "not found" for up to 30 minutes. When the normal
@@ -296,6 +324,10 @@ def check(force=False):
             r = call("GET", "/v1/me")
             st = load()
             st.update(member=r["member"], org=r["org"], last_ok=_now(), latest=r.get("latest"), offline_since=None)
+            if "hw" in _HW:   # the server just accepted it: what to send when the UUID can't be read for a moment
+                st["hw"] = _HW["hw"]
+            if "name" in _HW:
+                st["mac_name"] = _HW["name"]
             save(st)
         elif not st.get("token"):
             r = call("POST", "/v1/hello", {"hw": hw(), "name": mac_name(), "version": version()}, auth=False)
@@ -339,7 +371,7 @@ def end(reason):
 def _signed_in(r):
     st = load()
     st.update(token=r["token"], device_id=r["device_id"], member=r["member"], org=r["org"], last_ok=_now(), last_check=_now(),
-              signed_in=_iso(), offline_since=None)
+              signed_in=_iso(), offline_since=None, hw=hw(), mac_name=mac_name())
     for k in ("ended", "ended_at"):
         st.pop(k, None)
     save(st)
@@ -520,7 +552,12 @@ def update(force=False):
     if hashlib.sha256(data).hexdigest() != info["sha256"]:
         tmp.unlink(missing_ok=True)
         raise CloudError(0, "bad-download", "The download didn't match its fingerprint; nothing was changed.")
-    install_zip(data, ROOT)
+    UPDATING.update(to=info["version"], at=_now())   # stays set: Home restarts on the new version right after
+    try:
+        install_zip(data, ROOT)
+    except Exception:
+        UPDATING.clear()
+        raise
     tmp.unlink(missing_ok=True)
     return {"updated": True, "version": info["version"]}
 
@@ -616,8 +653,9 @@ def install_agent():
 def start_home():
     """Home on this Mac (through its LaunchAgent when there is one); returns its URL once it answers."""
     if not install_agent():
-        subprocess.Popen(["/usr/bin/python3", str(ROOT / "home.py"), "serve", "--no-open"], stdin=subprocess.DEVNULL,
-                         stdout=open(STATE / "home.log", "ab"), stderr=subprocess.STDOUT, start_new_session=True, cwd=str(ROOT))
+        with open(STATE / "home.log", "ab") as log:
+            subprocess.Popen(["/usr/bin/python3", str(ROOT / "home.py"), "serve", "--no-open"], stdin=subprocess.DEVNULL,
+                             stdout=log, stderr=subprocess.STDOUT, start_new_session=True, cwd=str(ROOT))
     for _ in range(80):
         time.sleep(0.25)
         try:
