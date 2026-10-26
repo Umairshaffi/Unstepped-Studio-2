@@ -628,23 +628,104 @@ fetch('/status?t='+T).then(r=>r.json()).then(r=>{if(r.ask&&r.ask.email)asked(r.a
 </script></body></html>"""
 
 
-def install_agent():
-    """Home starts by itself whenever this person logs in (a LaunchAgent); a crash restarts it."""
-    if os.environ.get("UNSTEPPED_NO_AGENT"):
-        return False
+HOME_APP = STATE / "Unstepped Home.app"
+LAUNCHER_C = r"""/* Unstepped Home's launcher. macOS decides file access (Documents, Desktop, drives, Full Disk Access) by the app
+   that started a process: Home runs as this app's child, so it is "Unstepped Home" in Privacy & Security. */
+#include <errno.h>
+#include <signal.h>
+#include <spawn.h>
+#include <sys/wait.h>
+extern char **environ;
+static pid_t child;
+static void pass(int s) { if (child > 0) kill(child, s); }
+int main(int argc, char **argv) {
+    if (argc < 2) return 64;
+    signal(SIGTERM, pass); signal(SIGINT, pass); signal(SIGHUP, pass);
+    if (posix_spawn(&child, argv[1], NULL, NULL, argv + 1, environ) != 0) return 127;
+    int st;
+    while (waitpid(child, &st, 0) < 0) if (errno != EINTR) return 1;
+    return WIFEXITED(st) ? WEXITSTATUS(st) : 128 + WTERMSIG(st);
+}
+"""
+_WHY = "Unstepped Home lists, opens and moves the styles and videos you keep"
+APP_INFO = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleIdentifier</key><string>com.unstepped.home</string>
+  <key>CFBundleName</key><string>Unstepped Home</string>
+  <key>CFBundleDisplayName</key><string>Unstepped Home</string>
+  <key>CFBundleExecutable</key><string>unstepped-home</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>1</string>
+  <key>LSUIElement</key><true/>
+  <key>NSDocumentsFolderUsageDescription</key><string>{_WHY} in Documents.</string>
+  <key>NSDesktopFolderUsageDescription</key><string>{_WHY} on the Desktop.</string>
+  <key>NSDownloadsFolderUsageDescription</key><string>{_WHY} in Downloads.</string>
+  <key>NSRemovableVolumesUsageDescription</key><string>{_WHY} on this drive.</string>
+  <key>NSNetworkVolumesUsageDescription</key><string>{_WHY} on this network drive.</string>
+</dict></plist>
+"""
+
+
+def home_app():
+    """Unstepped Home.app's launcher (its path), built once with this Mac's own compiler and kept across updates: a
+    rebuild would change its signature and lose what the person allowed. Started straight from /usr/bin/python3, macOS
+    checked Home against the xcode-select shim's identity while Python.app's code ran, so no Full Disk Access grant
+    could match (Zain, 2026-10-26). None without a compiler: Home then starts as before."""
+    exe = HOME_APP / "Contents" / "MacOS" / "unstepped-home"
+    if exe.is_file():
+        return exe
+    tmp = HOME_APP.with_name(HOME_APP.name + ".new")
+    src = STATE / "unstepped-home.c"
+    try:
+        shutil.rmtree(tmp, ignore_errors=True)
+        (tmp / "Contents" / "MacOS").mkdir(parents=True)
+        src.write_text(LAUNCHER_C)
+        built = subprocess.run(["/usr/bin/clang", "-O2", "-o", str(tmp / "Contents" / "MacOS" / "unstepped-home"), str(src)],
+                               capture_output=True, timeout=180)
+        if built.returncode:
+            return None
+        (tmp / "Contents" / "Info.plist").write_text(APP_INFO)
+        if subprocess.run(["/usr/bin/codesign", "-s", "-", "--force", str(tmp)], capture_output=True, timeout=60).returncode:
+            return None
+        shutil.rmtree(HOME_APP, ignore_errors=True)
+        tmp.rename(HOME_APP)
+        return exe
+    except (OSError, subprocess.SubprocessError):
+        return None
+    finally:
+        src.unlink(missing_ok=True)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def agent_plist():
+    """Write the login item: Home inside Unstepped Home.app when this Mac has it."""
+    from xml.sax.saxutils import escape
+    exe = home_app()
+    args = ([str(exe)] if exe else []) + ["/usr/bin/python3", str(ROOT / "home.py"), "serve", "--no-open"]
+    env = {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", **({"UNSTEPPED_HOME_APP": str(HOME_APP)} if exe else {})}
     plist = Path.home() / "Library" / "LaunchAgents" / f"{AGENT}.plist"
     plist.parent.mkdir(parents=True, exist_ok=True)
     plist.write_text(f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>{AGENT}</string>
-  <key>ProgramArguments</key><array><string>/usr/bin/python3</string><string>{ROOT / "home.py"}</string><string>serve</string><string>--no-open</string></array>
-  <key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
+  <key>ProgramArguments</key><array>{"".join(f"<string>{escape(a)}</string>" for a in args)}</array>
+  <key>EnvironmentVariables</key><dict>{"".join(f"<key>{k}</key><string>{escape(v)}</string>" for k, v in env.items())}</dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
-  <key>StandardOutPath</key><string>{STATE / "home.log"}</string><key>StandardErrorPath</key><string>{STATE / "home.log"}</string>
+  <key>StandardOutPath</key><string>{escape(str(STATE / "home.log"))}</string><key>StandardErrorPath</key><string>{escape(str(STATE / "home.log"))}</string>
 </dict></plist>
 """)
+    return plist
+
+
+def install_agent():
+    """Home starts by itself whenever this person logs in (a LaunchAgent); a crash restarts it."""
+    if os.environ.get("UNSTEPPED_NO_AGENT"):
+        return False
+    plist = agent_plist()
     dom = f"gui/{os.getuid()}"
     subprocess.run(["launchctl", "bootout", f"{dom}/{AGENT}"], capture_output=True)
     return subprocess.run(["launchctl", "bootstrap", dom, str(plist)], capture_output=True).returncode == 0

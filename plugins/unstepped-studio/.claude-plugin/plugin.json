@@ -1,6 +1,6 @@
 {
   "name": "unstepped-studio",
-  "version": "2.2.5",
+  "version": "2.2.6",
   "description": "Installs Unstepped Studio (Home and the review page for client video edits) from your company's Unstepped Cloud, keeps it updated, and checks the sign-in when a Claude session starts.",
   "author": {
     "name": "Unstepped"
