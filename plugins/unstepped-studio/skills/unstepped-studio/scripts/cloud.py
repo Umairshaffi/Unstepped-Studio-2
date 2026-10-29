@@ -116,6 +116,8 @@ def hw():
     copied sign-in and locks the Mac out (Rizwan's Mac, the minute 2.2.3 installed)."""
     if os.environ.get("UNSTEPPED_HW"):   # tests: pretend to be another Mac
         return hashlib.sha256(os.environ["UNSTEPPED_HW"].encode()).hexdigest()
+    if load().get("hw_legacy"):   # the server knows this Mac by the ID an older version made up (see _adopt_legacy)
+        return _legacy_hw()
     if "hw" not in _HW:
         u = _uuid()
         if not u:
@@ -124,6 +126,30 @@ def hw():
             raise CloudError(0, "no-hw", "Couldn't read this Mac's hardware ID just now. Try again in a moment.")
         _HW["hw"] = hashlib.sha256(f"unstepped|{u}".encode()).hexdigest()
     return _HW["hw"]
+
+
+def _legacy_hw():
+    """The ID versions before 2.2.4 sent when they couldn't read the hardware UUID, made from this Mac's name and home
+    folder. A Mac that signed in at such a moment is known to the server by it."""
+    return hashlib.sha256(f"unstepped|{os.uname().nodename}-{Path.home()}".encode()).hexdigest()
+
+
+def _adopt_legacy():
+    """The server said wrong-mac. Before locking this Mac, ask once with the ID an older version would have made up
+    here: if the server knows this Mac by that one (it signed in while 2.2.3 couldn't read the UUID), keep using it, and
+    this Mac stays signed in. A sign-in copied to another Mac makes a different one there, so it still locks."""
+    old = _legacy_hw()
+    if os.environ.get("UNSTEPPED_HW") or load().get("hw_legacy") or old == _HW.get("hw"):
+        return False
+    try:
+        call("GET", "/v1/me", headers={"x-unstepped-hw": old})
+    except CloudError:
+        return False
+    st = load()
+    st.update(hw_legacy=True, hw=old)
+    save(st)
+    _HW["hw"] = old
+    return True
 
 
 def mac_name():
@@ -192,6 +218,20 @@ class Stopped(Exception):
     """A download stopped part way on purpose (paused or cancelled on Home): the half-written file is gone."""
 
 
+def launch():
+    """How Home runs on this Mac, for the team dashboard: the login item inside Unstepped Home.app ("app", the only way
+    macOS can give it drive access), inside Unstepped Home.app but started by start_home() because the login item
+    wouldn't load ("app-fallback": macOS may count its access against whatever started it), the login item on bare
+    Python ("python", from before 2.2.5), or started by a Claude session or a terminal ("session"). Only Home's own
+    process says (None for any other command), so a session's style.py or review.py never stands in for it."""
+    if Path(sys.argv[0]).name != "home.py":
+        return None
+    agent = os.environ.get("XPC_SERVICE_NAME") == AGENT
+    if os.environ.get("UNSTEPPED_HOME_APP"):
+        return "app" if agent else "app-fallback"
+    return "python" if agent else "session"
+
+
 def call(method, path, body=None, auth=True, data=None, stream_to=None, ctype=None, timeout=30, headers=None, with_headers=False,
          stop=None, tick=None):
     """A request to the server. JSON in and out unless data= (raw upload) or stream_to= (a download to a file). While
@@ -201,6 +241,8 @@ def call(method, path, body=None, auth=True, data=None, stream_to=None, ctype=No
         raise CloudError(0, "no-server", "Unstepped Cloud isn't set up on this Mac.")
     st = load()
     h = {"x-unstepped-hw": hw(), "x-unstepped-version": version(), "x-unstepped-mac": _plain(mac_name())[:80], "user-agent": f"unstepped/{version()}"}
+    if launch():
+        h["x-unstepped-launch"] = launch()
     if auth and st.get("token"):
         h["authorization"] = f"Bearer {st['token']}"
     h.update(headers or {})
@@ -209,7 +251,7 @@ def call(method, path, body=None, auth=True, data=None, stream_to=None, ctype=No
         payload, h["content-type"] = json.dumps(body).encode(), "application/json"
     elif data is not None:
         payload, h["content-type"] = data, ctype or "application/octet-stream"
-        if hasattr(data, "read"):
+        if hasattr(data, "read") and "content-length" not in h:   # a part of a file or bytes in memory say their own length
             h["content-length"] = str(os.fstat(data.fileno()).st_size)
     req = urllib.request.Request(srv + path, data=payload, method=method, headers=h)
     try:
@@ -305,6 +347,44 @@ def guard(tool="this tool"):
         s = state()
         if s["state"] == "locked":
             sys.exit(f"Unstepped is locked: {lock_message(s)}")
+    if s["state"] != "off":
+        try:
+            if home_behind():
+                kick_home()
+        except Exception:
+            pass
+
+
+def home_behind():
+    """The version Home runs when it's older than the app on disk and Home can't notice by itself (a Home from before
+    2.2.7: an update a command-line tool installed never restarted it, so it served old code under the new page), else None."""
+    try:
+        url = (STATE / ".server").read_text(encoding="utf-8").strip()
+        v = json.loads(urllib.request.urlopen(url.replace("/?t=", "/api/version?t="), timeout=1).read())
+    except (OSError, ValueError):
+        return None
+    return v.get("version") if isinstance(v, dict) and v.get("version") != version() and not v.get("watch") else None
+
+
+def kick_home():
+    """Start the login item's Home again (on the code on disk). A Home started elsewhere gives way to it. At most once in
+    two minutes; never from a test copy."""
+    f = STATE / ".home-kicked"
+    try:
+        if _now() - f.stat().st_mtime < 120:
+            return False
+    except OSError:
+        pass
+    if not agent_ours():
+        return False
+    f.touch()
+    if agent_job():
+        code, said = _launchctl("kickstart", "-k", f"gui/{os.getuid()}/{AGENT}")
+        _hlog(f"kick: Home ran older code than {version()}: kickstart -k {code} {said}")
+    else:   # not loaded (booted out by hand): loaded again, inside Unstepped Home.app
+        agent_plist()
+        start_handover()
+    return True
 
 
 # ---------------------------------------------------------------- checking in
@@ -341,6 +421,8 @@ def check(force=False):
             save(st)
         elif e.error in ("signed-out", "not-signed-in"):
             end(e.extra.get("reason") or "signed-out")   # logged-out / removed / signed-out
+        elif e.error == "wrong-mac" and _adopt_legacy():
+            pass   # known to the server by the ID an older version made up here: still signed in
         elif e.error in ("wrong-mac", "suspended"):
             end(e.error)
     s = state()
@@ -379,6 +461,11 @@ def _signed_in(r):
 
 
 def signin(email, code):
+    st = load()
+    if st.pop("hw_legacy", None):   # signing in again: the Mac is registered by its real hardware ID from now on
+        st.pop("hw", None)
+        save(st)
+        _HW.pop("hw", None)
     r = call("POST", "/v1/signin", {"email": email.strip(), "code": code.strip(), "hw": hw(), "mac_name": mac_name(),
                                     "os": "macOS " + (subprocess.run(["sw_vers", "-productVersion"], capture_output=True, text=True).stdout.strip() or ""),
                                     "version": version()}, auth=False)
@@ -531,6 +618,20 @@ def wipe():
                 sf.write_text(json.dumps(sd, indent=2) + "\n", encoding="utf-8")
     except (OSError, ValueError, AttributeError):
         pass
+    try:   # and the start-up hook that told each session what's new in Unstepped (lib/current.py)
+        sd = json.loads(sf.read_text(encoding="utf-8")) if sf.is_file() else None
+        ss = ((sd or {}).get("hooks") or {}).get("SessionStart")
+        if isinstance(ss, list):
+            keep = [e for e in ss if "unstepped-review/lib/current.py" not in json.dumps(e)]
+            if keep != ss:
+                sd["hooks"]["SessionStart"] = keep
+                if not keep:
+                    sd["hooks"].pop("SessionStart")
+                if not sd["hooks"]:
+                    sd.pop("hooks")
+                sf.write_text(json.dumps(sd, indent=2) + "\n", encoding="utf-8")
+    except (OSError, ValueError, AttributeError):
+        pass
     if MANAGED.is_dir():   # anything left over from an older install
         for d in MANAGED.iterdir():
             if d.name not in reg.get("styles", {}):
@@ -668,35 +769,80 @@ APP_INFO = f"""<?xml version="1.0" encoding="UTF-8"?>
 """
 
 
+LAUNCHER_LOG = STATE / "launcher.json"   # why Unstepped Home.app couldn't be built here (Settings shows it)
+CLANG, CODESIGN = "/usr/bin/clang", "/usr/bin/codesign"
+
+
 def home_app():
     """Unstepped Home.app's launcher (its path), built once with this Mac's own compiler and kept across updates: a
     rebuild would change its signature and lose what the person allowed. Started straight from /usr/bin/python3, macOS
     checked Home against the xcode-select shim's identity while Python.app's code ran, so no Full Disk Access grant
-    could match (Zain, 2026-10-26). None without a compiler: Home then starts as before."""
+    could match (Zain, 2026-10-26). None without a compiler: Home then starts as before, and the step that failed, its
+    return code and what it said are kept in home/launcher.json and reported (before 2.2.7 they were thrown away)."""
     exe = HOME_APP / "Contents" / "MacOS" / "unstepped-home"
     if exe.is_file():
+        LAUNCHER_LOG.unlink(missing_ok=True)
         return exe
     tmp = HOME_APP.with_name(HOME_APP.name + ".new")
     src = STATE / "unstepped-home.c"
+    step = "write"
     try:
         shutil.rmtree(tmp, ignore_errors=True)
         (tmp / "Contents" / "MacOS").mkdir(parents=True)
         src.write_text(LAUNCHER_C)
-        built = subprocess.run(["/usr/bin/clang", "-O2", "-o", str(tmp / "Contents" / "MacOS" / "unstepped-home"), str(src)],
+        step = "compile"
+        built = subprocess.run([CLANG, "-O2", "-o", str(tmp / "Contents" / "MacOS" / "unstepped-home"), str(src)],
                                capture_output=True, timeout=180)
         if built.returncode:
-            return None
+            return _launcher_failed(step, built.returncode, built.stderr or built.stdout)
         (tmp / "Contents" / "Info.plist").write_text(APP_INFO)
-        if subprocess.run(["/usr/bin/codesign", "-s", "-", "--force", str(tmp)], capture_output=True, timeout=60).returncode:
-            return None
+        step = "sign"
+        signed = subprocess.run([CODESIGN, "-s", "-", "--force", str(tmp)], capture_output=True, timeout=60)
+        if signed.returncode:
+            return _launcher_failed(step, signed.returncode, signed.stderr or signed.stdout)
+        step = "install"
         shutil.rmtree(HOME_APP, ignore_errors=True)
         tmp.rename(HOME_APP)
+        LAUNCHER_LOG.unlink(missing_ok=True)
         return exe
-    except (OSError, subprocess.SubprocessError):
-        return None
+    except (OSError, subprocess.SubprocessError) as e:
+        return _launcher_failed(step, None, f"{type(e).__name__}: {e}")
     finally:
         src.unlink(missing_ok=True)
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _launcher_failed(step, code, said):
+    """Unstepped Home.app couldn't be built: kept in home/launcher.json for Settings, and reported to the dashboard
+    once per version (offline, it waits with the other reports). Returns None, like home_app."""
+    said = (said.decode("utf-8", "replace") if isinstance(said, bytes) else str(said or "")).strip()
+    rec = {"step": step, "returncode": code, "stderr": said[-2000:], "version": version(), "at": _iso(),
+           "reported": (launcher_problem() or {}).get("reported")}
+    if rec["reported"] != version():
+        try:
+            report(f"Unstepped Home.app couldn't be built on this Mac ({step} failed)",
+                   f"Step: {step}\nReturn code: {code}\n{said[-3000:] or '(nothing said)'}\nHome runs straight from Python, which "
+                   f"macOS can't be given access for: external drives and protected folders stay closed to it.", "bug", "home")
+            rec["reported"] = version()
+        except Exception:
+            pass
+    try:
+        STATE.mkdir(parents=True, exist_ok=True)
+        LAUNCHER_LOG.write_text(json.dumps(rec, indent=1))
+    except OSError:
+        pass
+    print(f"Unstepped Home.app: the {step} step failed ({code}): {said[-300:]}", file=sys.stderr)
+    return None
+
+
+def launcher_problem():
+    """Why Unstepped Home.app couldn't be built on this Mac ({"step", "returncode", "stderr", "version", "at"}), or None."""
+    if (HOME_APP / "Contents" / "MacOS" / "unstepped-home").is_file():
+        return None
+    try:
+        return json.loads(LAUNCHER_LOG.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
 
 
 def agent_plist():
@@ -705,7 +851,7 @@ def agent_plist():
     exe = home_app()
     args = ([str(exe)] if exe else []) + ["/usr/bin/python3", str(ROOT / "home.py"), "serve", "--no-open"]
     env = {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", **({"UNSTEPPED_HOME_APP": str(HOME_APP)} if exe else {})}
-    plist = Path.home() / "Library" / "LaunchAgents" / f"{AGENT}.plist"
+    plist = agent_path()
     plist.parent.mkdir(parents=True, exist_ok=True)
     plist.write_text(f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -721,22 +867,139 @@ def agent_plist():
     return plist
 
 
+LAUNCHCTL = os.environ.get("UNSTEPPED_LAUNCHCTL") or "/bin/launchctl"   # (a self-check points it at a pretend launchd)
+HANDOVER_LOG = STATE / "handover.log"
+
+
+def agent_path():
+    return Path.home() / "Library" / "LaunchAgents" / f"{AGENT}.plist"
+
+
+def _launchctl(*args):
+    try:
+        r = subprocess.run([LAUNCHCTL, *args], capture_output=True, text=True, timeout=30)
+        return r.returncode, (r.stderr or r.stdout or "").strip()
+    except (OSError, subprocess.SubprocessError) as e:
+        return -1, str(e)
+
+
+def _hlog(text):
+    try:
+        STATE.mkdir(parents=True, exist_ok=True)
+        with open(HANDOVER_LOG, "a", encoding="utf-8") as f:
+            f.write(f"{_iso()} {text}\n")
+    except OSError:
+        pass
+
+
+def agent_job():
+    """The login item as launchd has it loaded: {"path", "program", "state", "pid"}, or None when it isn't loaded."""
+    try:
+        r = subprocess.run([LAUNCHCTL, "print", f"gui/{os.getuid()}/{AGENT}"], capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode:
+        return None
+    get = lambda k: (re.search(rf"^\s*{k} = (.+)$", r.stdout, re.M) or [None, None])[1]
+    pid = (get("pid") or "").strip()
+    return {"path": get("path"), "program": get("program"), "state": get("state"), "pid": int(pid) if pid.isdigit() else None}
+
+
+def agent_file():
+    """The login item's file on disk ({"args", "env"}), or None. Read with plutil: plistlib needs expat, which some
+    Macs' Python lacks."""
+    try:
+        r = subprocess.run(["/usr/bin/plutil", "-convert", "json", "-o", "-", str(agent_path())], capture_output=True, text=True, timeout=15)
+        d = json.loads(r.stdout) if r.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    return {"args": d.get("ProgramArguments") or [], "env": d.get("EnvironmentVariables") or {}} if isinstance(d, dict) else None
+
+
+def agent_current():
+    """The login item's file starts this copy of Home inside Unstepped Home.app."""
+    f, exe = agent_file(), HOME_APP / "Contents" / "MacOS" / "unstepped-home"
+    return bool(f) and f["args"][:1] == [str(exe)] and str(ROOT / "home.py") in f["args"] and f["env"].get("UNSTEPPED_HOME_APP") == str(HOME_APP)
+
+
+def agent_ours():
+    """This copy of the app is the one the login item is for: ~/unstepped-review, or the one its file names. A test copy
+    (or anyone's second copy) never rewrites or reloads it."""
+    if os.environ.get("UNSTEPPED_NO_AGENT"):
+        return False
+    if ROOT.resolve() == (Path.home() / "unstepped-review").resolve():
+        return True
+    f = agent_file()
+    return bool(f) and str(ROOT / "home.py") in f["args"]
+
+
+def handover():
+    """Reload the login item so Home runs inside Unstepped Home.app: booted out, gone, loaded again from its file
+    (bootstrap is tried again: launchd refuses while the old job is still going away), started. Each step goes in
+    home/handover.log. Runs in a helper outside the job (`cloud.py handover`), since booting out the job ends the Home
+    in it. A job loaded from another file (another copy's) is left alone."""
+    dom, plist = f"gui/{os.getuid()}", agent_path()
+    j = agent_job()
+    if j and j.get("path") and Path(j["path"]).resolve() != plist.resolve():
+        _hlog(f"handover: the loaded login item is {j['path']}, not {plist}: left alone")
+        return False
+    if j:
+        _hlog("bootout: %s %s" % _launchctl("bootout", f"{dom}/{AGENT}"))
+        for _ in range(40):   # up to 20 s for the old job to go
+            if not agent_job():
+                break
+            time.sleep(0.5)
+        else:
+            _hlog("bootout: the old login item is still loaded after 20 s")
+    for i in range(5):
+        code, said = _launchctl("bootstrap", dom, str(plist))
+        _hlog(f"bootstrap ({i + 1}): {code} {said}")
+        if code == 0:
+            break
+        time.sleep(1 + i)
+    else:
+        return False
+    j = agent_job()
+    if j and not j.get("pid"):
+        _hlog("kickstart: %s %s" % _launchctl("kickstart", f"{dom}/{AGENT}"))
+        j = agent_job()
+    _hlog(f"loaded: {j}")
+    return True
+
+
+def start_handover():
+    """handover() in a helper of its own session, so it outlives the job it reloads."""
+    _hlog(f"handover asked by pid {os.getpid()} ({os.environ.get('XPC_SERVICE_NAME') or 'not the login item'})")
+    subprocess.Popen([sys.executable, str(ROOT / "cloud.py"), "handover"], start_new_session=True, cwd=str(ROOT),
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def install_agent():
-    """Home starts by itself whenever this person logs in (a LaunchAgent); a crash restarts it."""
+    """Home starts by itself whenever this person logs in (a LaunchAgent); a crash restarts it. A bootstrap launchd
+    refuses (the old job still going away) is tried again; a failure is kept in home/handover.log."""
     if os.environ.get("UNSTEPPED_NO_AGENT"):
         return False
     plist = agent_plist()
     dom = f"gui/{os.getuid()}"
-    subprocess.run(["launchctl", "bootout", f"{dom}/{AGENT}"], capture_output=True)
-    return subprocess.run(["launchctl", "bootstrap", dom, str(plist)], capture_output=True).returncode == 0
+    _launchctl("bootout", f"{dom}/{AGENT}")
+    for i in range(4):
+        code, said = _launchctl("bootstrap", dom, str(plist))
+        if code == 0:
+            return True
+        time.sleep(1 + i)
+    _hlog(f"install: bootstrap failed ({code}): {said}")
+    return False
 
 
 def start_home():
-    """Home on this Mac (through its LaunchAgent when there is one); returns its URL once it answers."""
+    """Home on this Mac (through its LaunchAgent when there is one); returns its URL once it answers. When the login
+    item can't be loaded, Home still starts inside Unstepped Home.app (the login item takes over from it later)."""
     if not install_agent():
+        exe = None if os.environ.get("UNSTEPPED_NO_AGENT") else home_app()
+        env = {**os.environ, "UNSTEPPED_NO_AGENT": "1", **({"UNSTEPPED_HOME_APP": str(HOME_APP)} if exe else {})}
         with open(STATE / "home.log", "ab") as log:
-            subprocess.Popen(["/usr/bin/python3", str(ROOT / "home.py"), "serve", "--no-open"], stdin=subprocess.DEVNULL,
-                             stdout=log, stderr=subprocess.STDOUT, start_new_session=True, cwd=str(ROOT))
+            subprocess.Popen(([str(exe)] if exe else []) + ["/usr/bin/python3", str(ROOT / "home.py"), "serve", "--no-open"],
+                             stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True, cwd=str(ROOT), env=env)
     for _ in range(80):
         time.sleep(0.25)
         try:
@@ -836,7 +1099,7 @@ def gate(open_browser=True, port=GATE_PORT):
     srv.serve_forever()
 
 
-APP_FILES = ("home.py", "review.py", "style.py", "templates.py", "shared.py", "cloud.py", "deploy.py", "macsetup.py", "studio.py", "rules.py", "lib", "LICENSE-cooked", "NOTICE-cooked")
+APP_FILES = ("home.py", "review.py", "style.py", "templates.py", "shared.py", "cloud.py", "deploy.py", "macsetup.py", "studio.py", "rules.py", "split.py", "lib", "LICENSE-cooked", "NOTICE-cooked")
 
 
 def publish(ver, notes=""):
@@ -891,6 +1154,8 @@ def main():
             gate(open_browser="--open" in a)   # the installing session shows it in the Claude app's built-in browser
         elif cmd == "start":
             print(start_home() or "Home didn't start")
+        elif cmd == "handover":   # (Home's helper: reload the login item, inside Unstepped Home.app)
+            sys.exit(0 if handover() else 1)
         elif cmd == "server" and len(a) == 2:
             st = load()
             st["server"] = a[1].rstrip("/")
