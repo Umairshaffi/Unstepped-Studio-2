@@ -735,6 +735,7 @@ LAUNCHER_C = r"""/* Unstepped Home's launcher. macOS decides file access (Docume
 #include <errno.h>
 #include <signal.h>
 #include <spawn.h>
+#include <stddef.h>   /* NULL: newer SDKs' spawn.h no longer brings it in (Raza, 2026-10-29) */
 #include <sys/wait.h>
 extern char **environ;
 static pid_t child;
@@ -771,6 +772,47 @@ APP_INFO = f"""<?xml version="1.0" encoding="UTF-8"?>
 
 LAUNCHER_LOG = STATE / "launcher.json"   # why Unstepped Home.app couldn't be built here (Settings shows it)
 CLANG, CODESIGN = "/usr/bin/clang", "/usr/bin/codesign"
+SDK_ROOTS = (Path("/Library/Developer/CommandLineTools/SDKs"), Path("/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs"))
+
+
+def _sdks():
+    """This Mac's macOS SDKs, newest first (MacOSX.sdk and the other links counted once, as what they point at)."""
+    out = {}
+    for r in SDK_ROOTS:
+        try:
+            for p in r.iterdir():
+                if p.suffix == ".sdk" and not p.is_symlink() and p.is_dir():
+                    out[str(p)] = [int(x) for x in re.findall(r"\d+", p.name)]
+        except OSError:
+            pass
+    return [Path(p) for p in sorted(out, key=lambda p: out[p], reverse=True)]
+
+
+def _toolchain():
+    """What a build here would use: the compiler, the developer folder xcode-select points at, the SDK folders and when
+    each changed. A build that failed is tried again when this (or the app's version) changes, not at every start."""
+    bits = []
+    for p in (Path(CLANG), Path("/var/db/xcode_select_link"), Path("/Library/Developer/CommandLineTools/usr/bin/ld"), *SDK_ROOTS):
+        try:
+            bits.append(f"{p}>{os.path.realpath(p)}@{p.stat().st_mtime_ns}")
+        except OSError:
+            bits.append(f"{p}:-")
+    return "|".join(bits)
+
+
+def _compile(out, src):
+    """clang with this Mac's default SDK, then each other SDK it has. Command Line Tools older than the SDK they were
+    given (Muhammad's Mac mini: `ld: tapi error ... unknown architecture arm64e.x1`) link with an older SDK. ->
+    (return code, what the default build said, the SDKs tried after it)"""
+    first, tried = None, []
+    for sdk in [None, *_sdks()]:
+        r = subprocess.run([CLANG, "-O2", *(["-isysroot", str(sdk)] if sdk else []), "-o", str(out), str(src)], capture_output=True, timeout=180)
+        if not r.returncode:
+            return 0, None, tried
+        first = first or r
+        if sdk:
+            tried.append(sdk.name)
+    return first.returncode, first.stderr or first.stdout, tried
 
 
 def home_app():
@@ -778,31 +820,36 @@ def home_app():
     rebuild would change its signature and lose what the person allowed. Started straight from /usr/bin/python3, macOS
     checked Home against the xcode-select shim's identity while Python.app's code ran, so no Full Disk Access grant
     could match (Zain, 2026-10-26). None without a compiler: Home then starts as before, and the step that failed, its
-    return code and what it said are kept in home/launcher.json and reported (before 2.2.7 they were thrown away)."""
+    return code and what it said are kept in home/launcher.json and reported (before 2.2.7 they were thrown away). A
+    compile that failed isn't tried again until the version or the compiler changes. Each build has its own scratch
+    folder (several Home starts at once never share one)."""
     exe = HOME_APP / "Contents" / "MacOS" / "unstepped-home"
     if exe.is_file():
         LAUNCHER_LOG.unlink(missing_ok=True)
         return exe
-    tmp = HOME_APP.with_name(HOME_APP.name + ".new")
-    src = STATE / "unstepped-home.c"
+    lp = launcher_problem() or {}
+    if lp.get("step") == "compile" and lp.get("version") == version() and lp.get("toolchain") == _toolchain():
+        return None   # failed with this compiler already: Home runs from Python, and Settings says why
+    tmp = HOME_APP.with_name(f"{HOME_APP.name}.new-{os.getpid()}")
+    src = STATE / f"unstepped-home-{os.getpid()}.c"
     step = "write"
     try:
         shutil.rmtree(tmp, ignore_errors=True)
         (tmp / "Contents" / "MacOS").mkdir(parents=True)
         src.write_text(LAUNCHER_C)
         step = "compile"
-        built = subprocess.run([CLANG, "-O2", "-o", str(tmp / "Contents" / "MacOS" / "unstepped-home"), str(src)],
-                               capture_output=True, timeout=180)
-        if built.returncode:
-            return _launcher_failed(step, built.returncode, built.stderr or built.stdout)
+        code, said, tried = _compile(tmp / "Contents" / "MacOS" / "unstepped-home", src)
+        if code:
+            return _launcher_failed(step, code, said, tried)
         (tmp / "Contents" / "Info.plist").write_text(APP_INFO)
         step = "sign"
         signed = subprocess.run([CODESIGN, "-s", "-", "--force", str(tmp)], capture_output=True, timeout=60)
         if signed.returncode:
             return _launcher_failed(step, signed.returncode, signed.stderr or signed.stdout)
         step = "install"
-        shutil.rmtree(HOME_APP, ignore_errors=True)
-        tmp.rename(HOME_APP)
+        if not exe.is_file():   # another Home start built it meanwhile: that one stays
+            shutil.rmtree(HOME_APP, ignore_errors=True)
+            tmp.rename(HOME_APP)
         LAUNCHER_LOG.unlink(missing_ok=True)
         return exe
     except (OSError, subprocess.SubprocessError) as e:
@@ -812,27 +859,54 @@ def home_app():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def _launcher_failed(step, code, said):
+def _launcher_key(step, said):
+    """A failure without this Mac's paths and numbers: the same one is reported once, not again at every update."""
+    lines = [x for x in said.splitlines() if "error" in x.lower()] or said.splitlines()[:2]
+    return step + ": " + " | ".join(re.sub(r"\d+", "#", re.sub(r"/[^\s:'\"]+", "<path>", x)).strip() for x in lines[:4])
+
+
+def _launcher_fix(said):
+    """What the person can do about a failed build, from what it said, or None."""
+    if re.search(r"tapi|unknown architecture|SDK.*(newer|older)", said, re.I):
+        return ("This Mac's Command Line Tools are older than their macOS SDK. Install their update (System Settings › General › "
+                "Software Update), then restart Home.")
+    if re.search(r"invalid active developer path|xcrun: error|no developer tools|clang: No such file", said, re.I):
+        return "This Mac has no Command Line Tools. Install them (in Terminal: xcode-select --install), then restart Home."
+    return None
+
+
+def _launcher_failed(step, code, said, tried=()):
     """Unstepped Home.app couldn't be built: kept in home/launcher.json for Settings, and reported to the dashboard
-    once per version (offline, it waits with the other reports). Returns None, like home_app."""
+    once per problem (offline, it waits with the other reports): the same failure after an update isn't reported again
+    (Raza's and Muhammad's Macs sent it at every one). Returns None, like home_app."""
     said = (said.decode("utf-8", "replace") if isinstance(said, bytes) else str(said or "")).strip()
-    rec = {"step": step, "returncode": code, "stderr": said[-2000:], "version": version(), "at": _iso(),
-           "reported": (launcher_problem() or {}).get("reported")}
-    if rec["reported"] != version():
+    key, was = _launcher_key(step, said), launcher_problem() or {}
+    rec = {"step": step, "returncode": code, "stderr": said[-2000:], "version": version(), "at": _iso(), "key": key,
+           "toolchain": _toolchain(), "tried": list(tried), "fix": _launcher_fix(said), "reported": was.get("reported"),
+           "reported_key": was.get("reported_key")}
+    if rec["reported_key"] != key:
+        rec["reported_key"], rec["reported"] = key, version()   # written before it goes: a Home starting meanwhile doesn't send it twice
+        _launcher_save(rec)
         try:
             report(f"Unstepped Home.app couldn't be built on this Mac ({step} failed)",
-                   f"Step: {step}\nReturn code: {code}\n{said[-3000:] or '(nothing said)'}\nHome runs straight from Python, which "
-                   f"macOS can't be given access for: external drives and protected folders stay closed to it.", "bug", "home")
-            rec["reported"] = version()
+                   f"Step: {step}\nReturn code: {code}\n{said[-3000:] or '(nothing said)'}\n"
+                   + (f"Also tried the SDKs {', '.join(tried)}: each failed too.\n" if tried else "")
+                   + (f"Fix: {rec['fix']}\n" if rec["fix"] else "")
+                   + "Home runs straight from Python, which macOS can't be given access for: external drives and protected "
+                     "folders stay closed to it.", "bug", "home")
         except Exception:
-            pass
+            rec["reported_key"], rec["reported"] = was.get("reported_key"), was.get("reported")
+    _launcher_save(rec)
+    print(f"Unstepped Home.app: the {step} step failed ({code}): {said[-300:]}", file=sys.stderr)
+    return None
+
+
+def _launcher_save(rec):
     try:
         STATE.mkdir(parents=True, exist_ok=True)
         LAUNCHER_LOG.write_text(json.dumps(rec, indent=1))
     except OSError:
         pass
-    print(f"Unstepped Home.app: the {step} step failed ({code}): {said[-300:]}", file=sys.stderr)
-    return None
 
 
 def launcher_problem():
