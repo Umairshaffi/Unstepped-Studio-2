@@ -66,19 +66,78 @@ def _ts(s):
         return None
 
 
-def load():
+BACKUP = STATE / ".cloud.bak"   # the last good copy, kept by every save
+
+
+def _parse(text):
+    """Settings from the file's text, or None. One with something after them (Rizwan's, 30 Oct: one stray "}" left by
+    two saves at once) still holds them: the first whole object is read."""
     try:
-        return json.loads(FILE.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        st = json.loads(text)
+    except ValueError:
+        try:
+            st, _ = json.JSONDecoder().raw_decode(text.lstrip())
+        except ValueError:
+            return None
+    return st if isinstance(st, dict) else None
+
+
+def load():
+    """This Mac's account and check-in state. A damaged file is read for what it holds and written again clean; one
+    that's gone or unreadable comes back from the last good copy. Never taken for a Mac that was never set up ("off"
+    showed the owner's Set up Unstepped Cloud, and Connect then saved over the sign-in)."""
+    try:
+        text = FILE.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        text = None
+    except OSError:
         return {}
+    if text is not None:
+        try:
+            return json.loads(text)   # the usual case
+        except ValueError:
+            pass
+    st = _parse(text) if text is not None else None
+    if st is None:   # gone, or not settings at all: the last good copy, if this Mac kept one
+        try:
+            st = _parse(BACKUP.read_text(encoding="utf-8"))
+        except OSError:
+            st = None
+        if st is None:
+            return {}
+    try:
+        save(st)   # written again clean, or put back
+    except OSError:
+        pass
+    return st
 
 
 def save(st):
+    """Written whole or not at all, one writer at a time: Home's threads, a session's check and a command can save at
+    the same moment, and with one shared temporary file two saves of different lengths left a stray character at the end
+    (and a writer crashed when another had already moved the file). Each save takes a lock on home/.cloud.lock, writes
+    its own temporary file to disk, and swaps it in."""
+    import fcntl
+    import threading
     STATE.mkdir(parents=True, exist_ok=True)
-    tmp = FILE.with_suffix(".tmp")
-    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as f:
-        json.dump(st, f, indent=1)
-    tmp.replace(FILE)
+    data = json.dumps(st, indent=1)
+    with open(STATE / ".cloud.lock", "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        tmp = FILE.with_name(f".cloud.{os.getpid()}.{threading.get_ident()}.tmp")
+        try:
+            with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            tmp.replace(FILE)
+            with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as f:
+                f.write(data)   # and the last good copy, the same way
+                f.flush()
+                os.fsync(f.fileno())
+            tmp.replace(BACKUP)
+        finally:
+            tmp.unlink(missing_ok=True)
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 def version():
