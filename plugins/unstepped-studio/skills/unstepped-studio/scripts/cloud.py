@@ -646,7 +646,7 @@ def wipe():
         gone.append(sk)
     if gone:
         for f, d in ((STATE / "styles.json", reg), (STATE / "shared.json", shared)):
-            tmp = f.with_suffix(".tmp")
+            tmp = f.with_name(f".{f.name}.{os.getpid()}.{threading.get_ident()}.tmp")   # this write's own (c00f9cda)
             tmp.write_text(json.dumps(d, indent=1), encoding="utf-8")
             tmp.replace(f)
     rec = rj(STATE / "skills.json") if (STATE / "skills.json").is_file() else {}
